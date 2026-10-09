@@ -1,8 +1,17 @@
 # Implementation Guide
 
-Open-source replacement firmware for the Waveshare **Modbus RTU Relay 4CH**.
-Goal: behave like the stock firmware described in the
-[Waveshare wiki](https://www.waveshare.com/wiki/Modbus_RTU_Relay_4CH).
+Open-source firmware for the Waveshare **Modbus RTU Relay 4CH** board.
+Two variants are built from the same code base:
+
+- **plain**: a generic 4-channel Modbus relay, a cleaned-up and
+  Modbus-compliant successor of the stock firmware.
+- **heater**: a 3-phase heating rod controller. It takes a power setpoint
+  in percent and switches 3 elements in 7 steps (see
+  [schematic](heater_rod_4_changeover_schematic.svg)).
+
+The variant is selected at build time. Everything else is shared: the
+Modbus server, RS485 driver, settings storage, watchdog, LED, factory reset
+and the common registers.
 
 ## 1. Hardware
 
@@ -10,7 +19,7 @@ Goal: behave like the stock firmware described in the
 |---------------|---------------------------------------------------------------|
 | MCU           | STM32F030C8T6 (64 KiB flash, 8 KiB RAM, Cortex-M0)            |
 | Clock         | 8 MHz HSE, PLL x6 = 48 MHz SYSCLK/HCLK/PCLK                   |
-| Relays        | REL_1..REL_4 = PB0..PB3, **active low** (SET = off)           |
+| Relays        | REL_1..REL_4 = PB0..PB3, **active low** (SET = off), changeover contacts |
 | Status LED    | LED_STATE = PC13, **active low**                              |
 | RS485         | USART1 TX = PA9, RX = PA10, isolated transceiver              |
 | RS485 dir.    | No MCU-controlled DE/RE: the transceiver switches direction itself |
@@ -18,265 +27,369 @@ Goal: behave like the stock firmware described in the
 | TXD/RXD LEDs  | Hardware driven, not connected to the MCU                     |
 | SWD           | PA13 (SWDIO), PA14 (SWCLK)                                    |
 
-The board is flashed via SWD at 0x08000000. There is no bootloader, because
-the stock flash has been erased.
+The board is flashed via SWD at 0x08000000 (no bootloader). The stock flash
+has been erased.
 
-## 2. Protocol to Implement (stock compatible)
+## 2. Protocol Principles
 
-Serial: 8 data bits, 1 stop bit, parity none/even/odd. Default 9600 8N1.
-Default slave address: 1.
+- Standard Modbus RTU slave. Serial format: 8 data bits, 1 stop bit, parity
+  none/even/odd. Default **9600 8N1, address 1**.
+- Supported function codes: 01, 03, 04, 05, 06, 0F, 10. Optionally FC 2B/0E
+  (Read Device Identification), if the pinned nanoMODBUS version supports
+  it.
+- Broadcast (address 0) frames: writes are executed, and **no reply** is
+  sent, as the Modbus specification requires.
+- Coil writes accept only `FF00` and `0000`. Any other value gives
+  exception 03.
+- Unknown addresses give exception 02, and illegal values give exception 03.
+  A function code that the variant does not support (e.g. coil writes in
+  the heater variant) gives exception 01.
+- All addresses below are 0-based PDU addresses.
 
-### 2.1 Address handling
+### 2.1 Differences from the stock Waveshare firmware
 
-- A frame is accepted if its address byte equals the device address (1..255)
-  or 0 (broadcast).
-- Broadcast frames are executed. Stock-compatible behaviour **replies to
-  broadcast frames too**: the wiki uses `00 03 40 00 00 01` to read an
-  unknown device address, and the reply carries address byte `00`. This is
-  controlled by `CFG_BROADCAST_REPLY` (default 1). Set it to 0 for strict
-  Modbus behaviour (no replies to broadcast).
+| Stock                                         | Here |
+|-----------------------------------------------|------|
+| FC 05 value `5500` = toggle, toggle coils 0x0100+ | Dropped. It is not compliant, and a retry after a lost reply toggles twice. |
+| Replies to broadcast frames                   | Dropped (spec compliant) |
+| "All relays" coil 0x00FF                      | Use FC 0F or the relay mask register |
+| Flash on/off via coils 0x0200/0x0400          | Pulse timer holding registers (plain) |
+| Settings at 0x2000/0x4000, version at 0x8000  | New register map (below) |
 
-### 2.2 Coils (FC 01 / 05 / 0F)
+## 3. Register Map
 
-| Address         | FC     | Value                                                | Action |
-|-----------------|--------|------------------------------------------------------|--------|
-| 0x0000..0x0003  | 01     | -                                                    | Read relay state, bit0 = CH1 |
-| 0x0000..0x0003  | 05     | FF00 on, 0000 off, 5500 toggle                       | Set one relay |
-| 0x0000..0x0003  | 0F     | bit = state                                          | Set relays |
-| 0x00FF          | 05     | FF00 all on, 0000 all off, 5500 all toggle           | All relays |
-| 0x0100..0x0103  | 05     | FF00 toggle, 0000 no change                          | Toggle one relay |
-| 0x0100..0x0103  | 0F     | bit 1 = toggle, 0 = no change                        | Toggle relays |
-| 0x01FF          | 05     | FF00 toggle all, 0000 no change                      | Toggle all |
-| 0x0200..0x0203  | 05     | n = 0x0001..0x7FFF                                   | Flash on: relay on now, off after n x 100 ms |
-| 0x0400..0x0403  | 05     | n = 0x0001..0x7FFF                                   | Flash off: relay off now, on after n x 100 ms |
+Ranges 0x0000..0x000F and 0x0100..0x01FF are **common**.
+Range 0x0010..0x00FF is **variant specific**.
+
+### 3.1 Coils (FC 01 / 05 / 0F)
+
+| Addr          | plain | heater | Content |
+|---------------|-------|--------|---------|
+| 0x0000-0x0003 | R/W   | R      | Relay 1..4 state (1 = energized) |
+
+In the heater variant, relay writes would bypass the step table and the
+switching sequence, so FC 05/0F give exception 01.
+
+### 3.2 Input registers (FC 04, read only)
+
+| Addr   | Variant | Content |
+|--------|---------|---------|
+| 0x0000 | common  | Firmware version, `major << 8 \| minor` |
+| 0x0001 | common  | Variant ID: 1 = plain, 2 = heater |
+| 0x0002 | common  | Actual relay mask (bit0 = relay 1) |
+| 0x0003 | common  | Status flags (see 3.4) |
+| 0x0004 | common  | Uptime in seconds, high word |
+| 0x0005 | common  | Uptime in seconds, low word |
+| 0x0010 | heater  | Actual power in 0.1 % (0..1000), from the actual relay state |
+| 0x0011 | heater  | Actual step (0..6) |
+| 0x0012 | heater  | Target step (what the setpoint asks for, before hold time and sequencing) |
+
+### 3.3 Holding registers (FC 03 / 06 / 10)
+
+Common:
+
+| Addr   | Persist | Content |
+|--------|---------|---------|
+| 0x0000 | yes     | Communication timeout in s, 0 = off. Default: plain 0, heater 60 |
+| 0x0100 | staged  | Slave address 1..247 |
+| 0x0101 | staged  | Baud index: 0=4800, 1=9600, 2=19200, 3=38400, 4=57600, 5=115200, 6=128000, 7=256000 |
+| 0x0102 | staged  | Parity: 0 = none, 1 = even, 2 = odd |
+| 0x010F | -       | Command. 1 = save and apply serial settings. 2 = restore all defaults and apply. Reads give 0 |
+
+plain:
+
+| Addr          | Persist | Content |
+|---------------|---------|---------|
+| 0x0010        | no      | Relay mask, bit0..3 = relay 1..4 |
+| 0x0020-0x0023 | no      | Pulse timer relay 1..4 in 100 ms units. Writing N > 0 switches the relay on and off again after N x 100 ms. Writing 0 cancels the timer (the relay keeps its state). Reads return the remaining time |
+
+heater:
+
+| Addr   | Persist | Content |
+|--------|---------|---------|
+| 0x0010 | no      | **Setpoint in 0.1 %** (0..1000). Default after boot: 0 |
+| 0x0011 | yes     | Minimum hold time in s before stepping **up** again. Default 60 |
+| 0x0012 | yes     | Up-hysteresis in 0.1 %. Default 0 |
 
 Rules:
 
-- An FC 05 reply echoes the request. An FC 0F reply is addr, fc, start, qty.
-- Any direct set, clear or toggle of a channel cancels a running flash timer
-  on that channel. A new flash command restarts the timer.
-- A flash value of 0 or above 0x7FFF gives exception 03. Any other FC 05
-  value not listed in the table also gives exception 03.
-- FC 01: qty must be 1..4 and start + qty must be <= 4, otherwise exception 02.
-  qty = 0 gives exception 03.
-- FC 0F: the range must lie entirely inside 0x0000..0x0003 or entirely inside
-  0x0100..0x0103, otherwise exception 02. The byte count must equal
-  ceil(qty/8), otherwise exception 03.
+- **Persistent** values are saved to flash right after the reply, and only
+  if they changed.
+- **Staged** serial settings take effect only after command 1 has been
+  written to 0x010F. Otherwise, changing baud rate and parity in two writes
+  would lock the master out after the first one. The reply to the command
+  is still sent with the old settings. Reads of 0x0100..0x0102 return the
+  staged values.
+- Slave address range: 1..247, per the Modbus specification. The stock
+  firmware allowed up to 255.
+- Parity mapping 1 = even, 2 = odd is defined in a single table in
+  `config.c`.
 
-### 2.3 Holding registers (FC 03 / 06)
+### 3.4 Status flags (input register 0x0003)
 
-| Address | Access | Content |
-|---------|--------|---------|
-| 0x2000  | R/W    | High byte: parity (0 none, 1 even, 2 odd). Low byte: baud index |
-| 0x4000  | R/W    | Device address 0x0001..0x00FF |
-| 0x8000  | R      | Firmware version x 100 (`FW_VERSION`, starts at 100 = V1.00) |
+| Bit | Variant | Meaning |
+|-----|---------|---------|
+| 0   | common  | Communication timeout tripped. Outputs are forced to the safe state. Cleared by the next control write |
+| 1   | common  | Defaults in use: no valid config found in flash, or a factory reset was done |
+| 2   | common  | Last reset was caused by the watchdog |
+| 3   | common  | Flash write error |
+| 8   | heater  | Hold active: a higher step is pending because the hold time has not passed yet |
+| 9   | heater  | Switching sequence in progress |
 
-Baud index: 0=4800, 1=9600, 2=19200, 3=38400, 4=57600, 5=115200,
-6=128000, 7=256000.
+### 3.5 Communication timeout
 
-Rules:
+The timeout is retriggered **only by control writes**:
 
-- The registers are not contiguous, so FC 03 requires qty = 1 and a known
-  address. Otherwise it gives exception 02.
-- FC 06 to 0x8000 or to an unknown address gives exception 02. A value out of
-  range gives exception 03.
-- A changed setting takes effect **after the reply has been sent** with the
-  old settings, and is then saved to flash.
-- **Parity mapping is ambiguous in the wiki.** The "send" description says
-  1 = even, 2 = odd. The "receive" description says the opposite. We use
-  1 = even, 2 = odd, defined in a single table in `config.c` so it is easy
-  to swap.
+- plain: coil writes, relay mask writes, pulse timer writes
+- heater: setpoint writes
 
-### 2.4 Exceptions
+A master that only reads must not keep the outputs alive. When the timeout
+expires, the variant goes to its safe state (plain: all relays off; heater:
+step 0) and sets status bit 0.
 
-An exception reply is `addr, fc | 0x80, code, CRC`. Codes used:
-01 = unsupported function, 02 = illegal address, 03 = illegal value,
-04 = device failure (e.g. a flash write error).
+## 4. Heater Logic
 
-Frames with a bad CRC, a parity/framing/noise/overrun error, or fewer than
-4 bytes are dropped silently.
+### 4.1 Step table
 
-## 3. Software Architecture
+Wiring per [schematic](heater_rod_4_changeover_schematic.svg): 3 x 1.93 kW
+elements on L1/L2/L3/N. R3 off connects junction J to N, and R4 off connects
+the bottom of E3 to N.
 
-### 3.1 Modbus implementation: our own, no library
+| Step | Mask (bit0 = R1) | Circuit                          | Power share |
+|------|------------------|----------------------------------|-------------|
+| 0    | 0x0              | off                              | 0           |
+| 1    | 0x6 (R2+R3)      | L2-E2-E3-N in series (230 V / 2R) | 1/6         |
+| 2    | 0x1 (R1)         | E1 L1-N                          | 2/6         |
+| 3    | 0xE (R2+R3+R4)   | L2-E2-E3-L3 in series (400 V / 2R) | 3/6       |
+| 4    | 0x3 (R1+R2)      | E1 + E2 to N                     | 4/6         |
+| 5    | 0xF (all)        | E1 + series pair L2-L3           | 5/6         |
+| 6    | 0xB (R1+R2+R4)   | E1, E2, E3 all to N              | 6/6         |
 
-We write a small slave-only Modbus RTU stack (about 400 lines) instead of
-using FreeMODBUS or nanoMODBUS. Reasons:
+Invariant: **R3 only with R2**. Otherwise the open contact of R2 can see
+400 V. Every step in the table satisfies it.
 
-- The stock protocol breaks the Modbus specification in ways that libraries
-  reject or do not support: FC 05 with value 0x5500, replies to broadcast
-  frames, and "commands" encoded as coil addresses with timer values.
-  Libraries check these cases and would have to be patched.
-- We only need the RTU slave side, 5 function codes and 3 registers.
-- With our own stack we control the frame timing, the half-duplex RX
-  blanking and the memory use (8 KiB RAM).
-- The protocol core stays hardware independent, so it can be unit-tested
-  on the host.
+The power share does not depend on the element power, so no power
+configuration is needed. The energy manager scales percent to watts.
 
-### 3.2 Modules
+### 4.2 Quantization
+
+- Step threshold: `T[k] = floor(k * 1000 / 6)` = 0, 166, 333, 500, 666, 833, 1000.
+- Reported actual value: `A[k] = round(k * 1000 / 6)` = 0, 167, 333, 500, 667, 833, 1000.
+- Target step = the highest k with `setpoint >= T[k]`, so the setpoint is
+  rounded **down**. Writing back any reported actual value always selects
+  exactly that step.
+- Up-hysteresis h: stepping up to step j requires
+  `setpoint >= min(T[j] + h, 1000)`. Stepping down uses plain `T[k]`.
+
+### 4.3 Hold time
+
+- Stepping **down** happens immediately. The heater never draws more than
+  the setpoint for longer than one switching sequence.
+- Stepping **up** is allowed only when at least the hold time has passed
+  since the last step change. This limits relay cycles to at most one per
+  hold time, even with a jittering setpoint.
+- A communication timeout, a setpoint of 0, or boot always goes straight to
+  step 0, without waiting for the hold time.
+
+### 4.4 Switching sequence
+
+A step change from mask A to mask B runs in up to 3 phases, with
+`SEQ_PAUSE_MS` = 50 between them. Phases with nothing to do are skipped.
+
+1. If R3 is set in A and not in B: release R3.
+2. Set R1, R2 and R4 to B. R3 keeps its current state.
+3. If R3 is not set in A but is set in B: energize R3.
+
+Every intermediate state satisfies "R3 only with R2". A new target is taken
+over only when the sequencer is idle. The latest target wins. The hold
+timer starts when the sequence is complete. A host unit test checks all
+7 x 7 transitions for the invariant in every intermediate state.
+
+### 4.5 Limits outside firmware control
+
+- On a reset (watchdog, brown-out) or power loss, all relays release at the
+  same time and in random order. The sequence cannot be guaranteed then.
+  This is brief, and the end state (all off) is safe.
+- The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). Check
+  this against the NC rating of the relays actually fitted (the wiki says
+  10 A).
+
+## 5. Software Architecture
+
+### 5.1 Modbus stack: nanoMODBUS
+
+[nanoMODBUS](https://github.com/debevv/nanoMODBUS) (MIT) is vendored as a
+pinned release under `third_party/nanomodbus/`, with its `LICENSE` and a
+`VERSION` file.
+
+- It handles RTU framing, CRC, broadcast and exception replies.
+- Our code supplies the platform callbacks (`read`/`write`) and the server
+  callbacks (`read_coils`, `read_holding_registers`, `read_input_registers`,
+  `write_single_coil`, `write_multiple_coils`, `write_single_register`,
+  `write_multiple_registers`). Callbacks set to NULL give exception 01.
+- `nmbs_server_poll()` is called from the main loop with read timeout 0,
+  so it returns immediately when there is no data. Once the first byte of a
+  frame has arrived, nanoMODBUS reads the rest of it using the byte timeout.
+- The byte timeout is max(2 ms, ceil(t3.5)) at the current baud rate. It
+  is recomputed when the line settings change.
+- After a slave address change, the server instance is re-created.
+
+### 5.2 Modules
 
 ```
 App/
-  Inc/  app.h board.h crc16.h modbus.h devmap.h relay.h rs485.h config.h
-  Src/  app.c       app_init(), app_loop(), LED, watchdog, factory reset
-        rs485.c     USART1 + TIM16 ISR, frame RX/TX, line settings
-        crc16.c     Modbus CRC16 (table based)
-        modbus.c    frame check, address filter, FC decode, exception build  (portable)
-        devmap.c    Waveshare coil/register map (section 2)                  (portable)
-        relay.c     relay outputs, flash timers
-        config.c    persistent settings in flash
+  Inc/ ...
+  Src/
+    app.c           app_init(), app_loop(): LED, IWDG, factory reset, uptime
+    rs485.c         USART1 RXNE ISR -> ring buffer, blocking TX with RX blanking,
+                    line config (baud, parity)
+    mb_server.c     nanoMODBUS glue. Common registers, forwards the variant
+                    ranges to the profile, retriggers the comm timeout
+    config.c        persistent settings (flash log, 2 pages)
+    relay.c         relay outputs (active-low handling, mask get/set)
+    profile.h       variant interface (see 5.3)
+    profile_plain.c plain variant: coil/mask writes, pulse timers
+    profile_heater.c heater variant: register glue around heater_ctrl
+    heater_ctrl.c   portable step logic: quantization, hysteresis, hold time,
+                    sequencer. No HAL, host testable
+third_party/nanomodbus/
 test/
-  Makefile      host build (gcc), no HAL
-  test_main.c   wiki frames as test vectors, stubs for relay/config
+  Makefile          host build (gcc)
+  test_heater.c     quantization, hold time, all 7x7 sequences + invariant
+  test_server.c     nanoMODBUS server with an in-memory transport: register
+                    map, exceptions, broadcast, comm timeout, for both variants
 ```
 
 CubeMX-generated code is only touched inside `USER CODE` blocks.
-`main.c` calls `app_init()` in `USER CODE 2` and `app_loop()` in the
+`main.c` calls `app_init()` in `USER CODE 2` and `app_loop()` inside the
 `while (1)` loop.
 
-### 3.3 Build system
+### 5.3 Profile interface
 
-CubeMX overwrites the generated `Makefile` on every regeneration, so any app
-sources added to it are lost. We therefore **switch the CubeMX toolchain to
-CMake** (Project Manager, then Toolchain/IDE = CMake):
+```c
+typedef struct {
+    uint16_t id;                       /* input register 0x0001 */
+    void (*init)(void);
+    void (*poll)(uint32_t now_ms);     /* timers, sequencer */
+    void (*safe_state)(void);          /* comm timeout */
+    /* coils: write handler NULL -> exception 01 */
+    nmbs_error (*read_coils)(uint16_t addr, uint16_t qty, nmbs_bitfield out);
+    nmbs_error (*write_coils)(uint16_t addr, uint16_t qty, const nmbs_bitfield in);
+    /* variant range 0x0010..0x00FF only */
+    nmbs_error (*read_hreg)(uint16_t addr, uint16_t *val);
+    nmbs_error (*write_hreg)(uint16_t addr, uint16_t val, bool *control_write);
+    nmbs_error (*read_ireg)(uint16_t addr, uint16_t *val);
+    uint16_t (*status_flags)(void);    /* bits 8..15 */
+} profile_t;
 
-- CubeMX writes `cmake/stm32cubemx/CMakeLists.txt`, which it regenerates
-  freely.
-- The top-level `CMakeLists.txt` is written only once and is ours. It adds
-  `App/` and our own linker script.
-- Build commands: `cmake --preset Release && cmake --build --preset Release`.
-- The project uses its own linker script copy, `App/STM32F030C8Tx_app.ld`.
-  It reserves the config pages (see 3.7) and does not depend on the CubeMX
-  output (the generated script was broken before).
+extern const profile_t profile;       /* provided by profile_plain.c or profile_heater.c */
+```
 
-### 3.4 RS485 receive and transmit (`rs485.c`)
+Multi-register writes (FC 10) are validated in full first, then applied.
+If any value is invalid, nothing is written (exception 03).
 
-The F030 USART1 has **no receiver timeout** (`RTOR`). This is confirmed by
-the CMSIS header, which has no `IS_UART_RECEIVER_TIMEOUT_INSTANCE`. The
-frame end (t3.5) is therefore detected with **TIM16**:
+### 5.4 Build system and variant selection
 
-- TIM16 is clocked at 48 MHz with prescaler 47, so it counts 1 µs ticks. It
-  runs in one-pulse mode with ARR = t3.5.
-- The USART1 RXNE ISR (direct register access, not the HAL UART callbacks;
-  at 256000 baud a byte arrives every 39 µs) stores the byte and restarts
-  TIM16.
-- When TIM16 expires (the update ISR fires), the frame is complete. It is
-  handed to the main loop with a flag and further RX is ignored until it has
-  been processed.
-- t3.5 = 3.5 x 11 bit / baud for baud <= 19200. For higher rates it is a
-  fixed 1750 µs, as the Modbus spec requires. The t1.5 inter-character
-  check is not enforced; CRC checking covers corrupted frames.
-- The USART error flags (ORE, FE, NE, PE) are cleared in the ISR and mark
-  the current frame as bad.
-- TX is interrupt driven (TXE, then TC). During TX the receiver is switched
-  off (`CR1.RE = 0`). It is switched back on in the TC ISR, so any echo from
-  the auto-direction transceiver is discarded.
-- The reply starts right after processing. The t3.5 gap is already
-  guaranteed, because a frame is only complete after t3.5 of silence.
+CubeMX overwrites the generated `Makefile` on every regeneration, so the
+project **switches the CubeMX toolchain to CMake**:
+
+- `cmake/stm32cubemx/CMakeLists.txt` is regenerated by CubeMX.
+- The top-level `CMakeLists.txt` is ours. It adds `App/`,
+  `third_party/nanomodbus/` and our linker script
+  `App/STM32F030C8Tx_app.ld`.
+- Variant option: `-DFW_PROFILE=plain|heater`. It selects
+  `profile_plain.c` or `profile_heater.c` and defines `FW_PROFILE_HEATER`
+  (heater only). Output: `rtu-relais-4ch-<profile>.{elf,hex,bin}`.
+- Presets: `plain-release`, `heater-release`, `plain-debug` and
+  `heater-debug`.
+- Host tests: `make -C test`.
+
+### 5.5 RS485 driver (`rs485.c`)
+
+- The USART1 RXNE ISR writes into a 256-byte ring buffer. Uses direct
+  register access; HAL UART RX is not used, because at 256000 baud a byte
+  arrives every 39 µs.
+- The ISR clears the error flags (ORE, FE, NE, PE) and counts the errors.
+  A corrupted frame is then dropped by the nanoMODBUS CRC check.
+- `write()` callback: clear `CR1.RE`, send the bytes polled via TXE, wait
+  for TC, flush the ring buffer, then set `CR1.RE` again. This discards any
+  echo from the auto-direction transceiver. With a 256-byte reply at
+  4800 baud, TX blocks for at most about 0.6 s, which is below the
+  watchdog timeout.
 - Line reconfiguration uses `HAL_UART_Init()`. With parity, the word length
   must be **9 bits** (`UART_WORDLENGTH_9B` = 8 data + parity).
 - 128000 and 256000 baud at 48 MHz: BRR = 375 / 187.5. The baud error is
-  at most 0.27 %, which is fine.
+  at most 0.27 %.
 
-### 3.5 Relays and flash timers (`relay.c`)
-
-- `relay_set(ch, on)`, `relay_toggle(ch)` and `relay_get_mask()` handle the
-  active-low polarity in one place.
-- Flash timers are 32-bit deadlines based on `HAL_GetTick()` (1 ms). They
-  are evaluated in `relay_poll()` from the main loop, so no extra timer is
-  needed.
-- At power-on and after any reset, all relays are **off** (GPIO init state).
-
-### 3.6 Status LED
-
-- Normal operation: blink at 1 Hz (toggle every 500 ms), like the stock
-  "STA flashes when the MCU is running normally".
-- Factory reset done: 10 fast blinks (50 ms), then normal operation.
-
-### 3.7 Persistent settings (`config.c`)
+### 5.6 Persistent settings (`config.c`)
 
 - The last two 1 KiB flash pages are used: 0x0800F800 and 0x0800FC00. The
   linker script limits the application to 62 KiB.
-- Each record is 8 bytes (4 half-words, because the F0 programs 16 bits at a
-  time): `magic(16) | addr(8) | parity(8) | baud(8) | seq(8) | crc16(16)`.
+- Each record is 16 bytes, written as 8 half-words:
+  `magic, seq, addr, baud, parity, comm_timeout, hold_time, hysteresis, crc16`.
+  The fields are shared by both variants. The plain variant ignores the
+  heater fields.
 - Records are appended to the active page. When the page is full, the
-  record goes to the other page, which is erased first, and then the old
-  page is erased. At boot the newest valid record wins. If there is none,
-  the defaults (addr 1, 9600 8N1) are used.
-- A record is only written when a value actually changes.
+  other page is erased and receives the record, then the old page is
+  erased. At boot the newest valid record wins. If there is none, the
+  variant defaults are used and status bit 1 is set.
+- A record is only written when a value actually changed.
 - A page erase stalls the CPU for about 20 to 40 ms, and bytes received in
-  that time may be lost. This is acceptable because it happens only after a
-  settings write reply.
+  that time may be lost. This only happens right after a settings write.
 
-### 3.8 Factory reset
+### 5.7 Status LED
 
-The stock bootloader restored the defaults when SWDIO was shorted to GND at
-power-up. We keep the same procedure in the application:
+- Normal operation: blink at 1 Hz.
+- Communication timeout tripped: double blink.
+- Factory reset done: 10 fast blinks (50 ms).
 
-- At boot, `app_init()` samples PA13 several times over about 50 ms. PA13
-  stays in SWD AF mode, because IDR still reflects the pin level and SWDIO
-  has an internal pull-up.
-- If PA13 stays low, the defaults are written to flash and the LED confirms
-  with fast blinks.
+### 5.8 Factory reset
 
-### 3.9 Watchdog
+Same procedure as the stock bootloader: short **SWDIO (PA13) to GND at
+power-up**.
 
-The stock firmware is gone and Waveshare does not document whether it used
-a watchdog. You can check the option bytes for a hardware watchdog
-(`WDG_SW` = 0), because a mass erase without an RDP change leaves them
-untouched.
+- `app_init()` samples PA13 for about 50 ms. The pin stays in SWD AF mode,
+  because IDR still reflects the pin level and SWDIO has an internal
+  pull-up.
+- If PA13 stays low, the defaults are written and the LED confirms with
+  fast blinks.
+- Command 2 on holding register 0x010F does the same over Modbus.
 
-We use the **IWDG** anyway, because the device switches loads and a hung
-MCU must not stay hung:
+### 5.9 Watchdog
 
-- Clock is LSI (about 40 kHz, 30 to 50 kHz), prescaler 32, reload 1250.
-  This gives about 1 s nominal (0.8 to 1.3 s).
-- The watchdog is refreshed **only in the main loop**, and only after
-  `relay_poll()` and Modbus processing ran. ISRs never refresh it.
-- The timeout must be well above the flash page erase time (40 ms).
-- `DBGMCU->APB1FZ |= DBGMCU_APB1_FZ_DBG_IWDG_STOP` stops the watchdog while
-  the core is halted in the debugger.
-- After a watchdog reset, the relays go to the safe off state (see 3.5).
-  `RCC->CSR` IWDGRSTF can be read and cleared for diagnostics.
+The stock firmware is gone, so it can't be checked whether it used a
+watchdog. The option byte `WDG_SW` survives a plain mass erase and could
+show a hardware watchdog.
 
-## 4. CubeMX Changes Required
+We use the **IWDG**:
 
-To be done in CubeMX before implementation:
+- Clock is LSI (30 to 50 kHz), prescaler 32, reload 1250. This gives about
+  1 s nominal (0.8 to 1.3 s).
+- The watchdog is refreshed **only at the end of the main loop**. ISRs
+  never refresh it.
+- It is stopped while the core is halted in the debugger
+  (`DBGMCU_APB1_FZ_DBG_IWDG_STOP`, DBGMCU clock enabled).
+- After a watchdog reset, the relays come up off (GPIO init state), and
+  `RCC->CSR.IWDGRSTF` sets status bit 2. The flag is then cleared.
+
+## 6. CubeMX Changes Required
 
 1. Project Manager: Toolchain/IDE = **CMake**.
-2. Enable **TIM16** (activated, no channels). Prescaler and period are set
-   in our code. Do **not** enable the TIM16 interrupt in NVIC, because the
-   ISR is ours.
-3. Enable **IWDG**. Settings are made in code, or prescaler 32 and reload
-   1250. Do not start it from CubeMX init if possible.
-4. Leave the USART1 global interrupt **disabled** in NVIC. Our code defines
-   `USART1_IRQHandler` and enables the IRQ.
+2. Enable **IWDG**. Our code starts it with the values from 5.9.
+3. Leave the USART1 global interrupt **disabled** in NVIC. Our code defines
+   `USART1_IRQHandler` and enables the IRQ itself.
 
-Our code owns these IRQ handlers. CubeMX must not generate them, otherwise
-there are duplicate symbols.
+## 7. Implementation Steps
 
-## 5. Implementation Steps
-
-1. CubeMX changes (section 4), top-level CMake, our linker script,
-   `.gitignore`. The empty `app_init()` and `app_loop()` must build.
-2. `relay.c` and the LED blink. Check: blink pattern and relay walk test.
-3. `crc16.c`, `modbus.c` and `devmap.c`, plus host tests in `test/` with all
-   wiki frames. CRCs are computed by the test, because some wiki CRCs are
-   wrong.
-4. `rs485.c`: RX with TIM16 frame timing, TX with RX blanking. Check
-   against `mbpoll` or pymodbus at 9600.
-5. `config.c` and the settings registers: change baud, parity and address,
-   power-cycle, and check that they are kept.
-6. Flash timers, factory reset, IWDG.
-7. Test script `tools/test_device.py` (pymodbus). It runs the full register
-   map at all 8 baud rates and all 3 parities, including broadcast, the
-   exception paths and the flash timing.
-
-## 6. Open Points
-
-- Parity mapping 1/2 (see 2.3). Verify against a stock unit if one becomes
-  available.
-- Whether the stock firmware replies to broadcast *write* frames. Default:
-  yes (`CFG_BROADCAST_REPLY`).
-- Stock behaviour when FC 05 uses value 0 for flash on/off. We use
-  exception 03.
+1. CubeMX changes, top-level CMake with variant option, linker script,
+   empty `app_init()`/`app_loop()`. Both variants must build.
+2. `relay.c` and the LED.
+3. `rs485.c` and the nanoMODBUS glue with the common registers. Check with
+   `mbpoll` at 9600 baud.
+4. `profile_plain.c` with coils, mask and pulse timers. Then `config.c`
+   with the serial settings and the apply command.
+5. `heater_ctrl.c` with host tests, then `profile_heater.c`.
+6. Communication timeout, factory reset, IWDG, status flags.
+7. `tools/test_device.py` (pymodbus): register map on the real device for
+   both variants, all baud rates and parities, broadcast, exceptions,
+   timeout, and the heater step timing.
