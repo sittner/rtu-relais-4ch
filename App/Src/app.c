@@ -65,6 +65,8 @@ void app_loop(void)
     }
 
     mb_server_poll(now);
+    /* Fresh tick: sending a reply may have blocked for several ms */
+    now = HAL_GetTick();
     profile.poll(now);
 
     led_set_mode(mb_server_comm_timeout() ? LED_MODE_TIMEOUT : LED_MODE_NORMAL);

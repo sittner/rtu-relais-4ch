@@ -193,6 +193,11 @@ configuration is needed. The energy manager scales percent to watts.
   hold time, even with a jittering setpoint.
 - A communication timeout, a setpoint of 0, or boot always goes straight to
   step 0, without waiting for the hold time.
+- The hold time also counts from boot. The first step up after power-up
+  (or after a watchdog reset) therefore waits for the hold time. This
+  keeps relays from cycling in a reset loop.
+- The communication timeout steps down through the regular switching
+  sequence, not by dropping all relays at once.
 
 ### 4.4 Switching sequence
 
@@ -398,15 +403,33 @@ We use the **IWDG**:
 
 ## 7. Implementation Steps
 
+All steps are implemented. Not yet verified on hardware.
+
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
 2. `relay.c` and the LED.
-3. `rs485.c` and the nanoMODBUS glue with the common registers. Check with
-   `mbpoll` at 9600 baud.
+3. `rs485.c` and the nanoMODBUS glue with the common registers.
 4. `profile_plain.c` with coils, mask and pulse timers. Then `config.c`
    with the serial settings and the apply command.
 5. `heater_ctrl.c` with host tests, then `profile_heater.c`.
 6. Communication timeout, factory reset, IWDG, status flags.
-7. `tools/test_device.py` (pymodbus): register map on the real device for
-   both variants, all baud rates and parities, broadcast, exceptions,
-   timeout, and the heater step timing.
+7. `tools/test_device.py`: register map on the real device for both
+   variants (see 8).
+
+## 8. Testing
+
+- **Host tests:** `make -C test`. Register map of both variants, flash
+  log, heater step table (checked against a circuit model of the
+  schematic), and all 49 step transitions checked for the R3/R2 rules.
+- **Simulator:** `make -C test sim` builds `test/build/sim_plain` and
+  `sim_heater`. These run the firmware modules on the host and serve
+  Modbus RTU on a pseudo-terminal (the path is printed at start). They log
+  relay changes with timestamps. Baud rate and parity are not simulated.
+- **Device test:** `tools/test_device.py --port /dev/ttyUSB0` (needs
+  pyserial). It detects the variant and checks common registers,
+  exceptions, broadcast, the other-slave case, the pulse timer, the comm
+  timeout, the heater step walk and the hold time. `--serial-test` cycles
+  through baud rates (`--bauds`) and parities (`--parities`) and then
+  restores the original settings. `--echo` is for adapters that receive
+  their own transmission. **The test switches the relays: disconnect the
+  loads first.**

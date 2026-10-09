@@ -22,6 +22,19 @@ $(BUILD)/test_plain: test_plain.c ../App/Src/profile_plain.c $(COMMON) | $(BUILD
 $(BUILD)/test_heater: test_heater.c ../App/Src/profile_heater.c ../App/Src/heater_ctrl.c $(COMMON) | $(BUILD)
 	$(CC) $(CFLAGS) -DFW_PROFILE_HEATER -o $@ $^
 
+# Simulators for tools/test_device.py (no sanitizers, runs forever)
+SIM_SRC := sim.c ../App/Src/mb_server.c ../App/Src/config.c ../App/Src/relay.c \
+           ../third_party/nanomodbus/nanomodbus.c
+SIM_CFLAGS := $(filter-out -fsanitize=%,$(CFLAGS))
+
+$(BUILD)/sim_plain: $(SIM_SRC) ../App/Src/profile_plain.c | $(BUILD)
+	$(CC) $(SIM_CFLAGS) -o $@ $^
+
+$(BUILD)/sim_heater: $(SIM_SRC) ../App/Src/profile_heater.c ../App/Src/heater_ctrl.c | $(BUILD)
+	$(CC) $(SIM_CFLAGS) -DFW_PROFILE_HEATER -o $@ $^
+
+sim: $(BUILD)/sim_plain $(BUILD)/sim_heater
+
 $(BUILD):
 	mkdir -p $@
 
@@ -32,4 +45,4 @@ run: $(BUILD)/test_plain $(BUILD)/test_heater
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run clean
+.PHONY: all run sim clean
