@@ -11,6 +11,9 @@
 #define PROFILE_ID_PLAIN  1
 #define PROFILE_ID_HEATER 2
 
+/* Status flag bits owned by the variant (input register 0x0003) */
+#define PROFILE_STATUS_MASK 0xFF00
+
 /* Register range handled by the variant */
 #define PROFILE_REG_FIRST 0x0010
 #define PROFILE_REG_LAST  0x00FF

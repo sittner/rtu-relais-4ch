@@ -17,7 +17,18 @@ typedef struct {
 #define CONFIG_ADDR_MIN 1
 #define CONFIG_ADDR_MAX 247
 
-#define CONFIG_BAUD_COUNT 8
+/* Baud rate index, see config_baud_rates[] */
+enum {
+    CONFIG_BAUD_4800,
+    CONFIG_BAUD_9600,
+    CONFIG_BAUD_19200,
+    CONFIG_BAUD_38400,
+    CONFIG_BAUD_57600,
+    CONFIG_BAUD_115200,
+    CONFIG_BAUD_128000,
+    CONFIG_BAUD_256000,
+    CONFIG_BAUD_COUNT
+};
 
 #define CONFIG_PARITY_NONE 0
 #define CONFIG_PARITY_EVEN 1

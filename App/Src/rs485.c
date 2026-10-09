@@ -4,6 +4,7 @@
 #include "usart.h"
 
 #include "config.h"
+#include "util.h"
 
 /*
  * RX: the RXNE interrupt fills a ring buffer, nanoMODBUS pulls from it.
@@ -15,6 +16,12 @@
 
 #define USART_ERR_FLAGS (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE | USART_ISR_PE)
 #define USART_ERR_CLEAR (USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF | USART_ICR_PECF)
+
+/* Modbus RTU t3.5: 3.5 characters of 11 bits up to 19200 baud, fixed above */
+#define T35_HALF_CHARS     7  /* 3.5 characters in half characters */
+#define MODBUS_CHAR_BITS   11 /* start + 8 data + parity/stop + stop */
+#define T35_FIXED_BAUD_MIN 19200
+#define T35_FIXED_US       1750
 
 /* Minimum byte timeout, tolerates gaps from USB-RS485 adapters */
 #define BYTE_TIMEOUT_MIN_MS 20
@@ -55,7 +62,7 @@ void USART1_IRQHandler(void)
 static void delay_us(uint32_t us)
 {
     uint32_t load = SysTick->LOAD + 1;
-    uint32_t remaining = us * (SystemCoreClock / 1000000);
+    uint32_t remaining = us * (SystemCoreClock / US_PER_S);
     uint32_t last = SysTick->VAL;
 
     while (remaining > 0) {
@@ -91,8 +98,9 @@ void rs485_init(uint32_t baud, uint8_t parity)
         Error_Handler();
     }
 
-    /* Modbus t3.5: 3.5 characters of 11 bits, fixed 1750 us above 19200 baud */
-    t35_us = (baud <= 19200) ? (38500000 + baud - 1) / baud : 1750;
+    t35_us = (baud <= T35_FIXED_BAUD_MIN)
+                 ? DIV_CEIL(T35_HALF_CHARS * MODBUS_CHAR_BITS * US_PER_S, 2 * baud)
+                 : T35_FIXED_US;
 
     rx_tail = rx_head;
     USART1->ICR = USART_ERR_CLEAR;
@@ -147,7 +155,7 @@ int32_t rs485_write(const uint8_t *buf, uint16_t count, int32_t timeout_ms, void
 
 void rs485_flush(void)
 {
-    uint32_t idle_ms = (t35_us + 999) / 1000 + 1;
+    uint32_t idle_ms = DIV_CEIL(t35_us, US_PER_MS) + 1;
     uint32_t start = HAL_GetTick();
     uint32_t last_rx = start;
 
@@ -163,7 +171,7 @@ void rs485_flush(void)
 
 int32_t rs485_byte_timeout_ms(void)
 {
-    uint32_t t35_ms = (t35_us + 999) / 1000;
+    uint32_t t35_ms = DIV_CEIL(t35_us, US_PER_MS);
     return (int32_t)(t35_ms > BYTE_TIMEOUT_MIN_MS ? t35_ms : BYTE_TIMEOUT_MIN_MS);
 }
 

@@ -29,26 +29,29 @@ static double circuit_power(uint8_t m)
 static void test_step_table(void)
 {
     for (int k = 0; k < HEATER_STEPS; k++) {
-        uint8_t m = heater_step_mask[k];
+        uint8_t m = heater_steps[k].mask;
         CHECK(!(m & HEATER_R3) || (m & HEATER_R2));
-        /* share of 3 elements == k/6 */
-        double share = circuit_power(m) / 3.0;
-        CHECK(share > k / 6.0 - 1e-9 && share < k / 6.0 + 1e-9);
-        CHECK_EQ(heater_step_threshold[k], k * 1000 / 6);
-        CHECK_EQ(heater_step_power[k], (k * 1000 + 3) / 6);
+        /* power == share of the 3 elements, in 0.1 % rounded up */
+        double share = circuit_power(m) / 3.0 * HEATER_POWER_FULL;
+        CHECK(heater_steps[k].power >= share - 1e-6 && heater_steps[k].power < share + 1.0 - 1e-6);
+        if (k > 0) {
+            CHECK(heater_steps[k].power > heater_steps[k - 1].power);
+        }
     }
+    CHECK_EQ(heater_steps[0].power, 0);
+    CHECK_EQ(heater_steps[HEATER_STEPS - 1].power, HEATER_POWER_FULL);
 }
 
 static void test_quantization(void)
 {
     for (int k = 0; k < HEATER_STEPS; k++) {
-        CHECK_EQ(heater_ctrl_step_for(heater_step_threshold[k]), k);
-        CHECK_EQ(heater_ctrl_step_for(heater_step_power[k]), k);
+        CHECK_EQ(heater_ctrl_step_for(heater_steps[k].power), k);
         if (k > 0) {
-            CHECK_EQ(heater_ctrl_step_for(heater_step_threshold[k] - 1), k - 1);
+            CHECK_EQ(heater_ctrl_step_for(heater_steps[k].power - 1), k - 1);
         }
     }
-    CHECK_EQ(heater_ctrl_step_for(1000), 6);
+    CHECK_EQ(heater_ctrl_step_for(333), 1); /* 33.3 % < 2/6: rounded down */
+    CHECK_EQ(heater_ctrl_step_for(HEATER_POWER_FULL), HEATER_STEPS - 1);
 }
 
 /* Run the controller in 1 ms steps, check every relay transition */
@@ -86,16 +89,16 @@ static void test_all_transitions(void)
             heater_ctrl_t h;
             sim_now = 0;
             heater_ctrl_init(&h, sim_now);
-            heater_ctrl_set_setpoint(&h, heater_step_power[a]);
+            heater_ctrl_set_setpoint(&h, heater_steps[a].power);
             sim_run(&h, 500, 0, 0);
             CHECK_EQ(h.actual_step, a);
-            CHECK_EQ(h.mask, heater_step_mask[a]);
+            CHECK_EQ(h.mask, heater_steps[a].mask);
 
             sim_transitions = 0;
-            heater_ctrl_set_setpoint(&h, heater_step_power[b]);
+            heater_ctrl_set_setpoint(&h, heater_steps[b].power);
             sim_run(&h, 500, 0, 0);
             CHECK_EQ(h.actual_step, b);
-            CHECK_EQ(h.mask, heater_step_mask[b]);
+            CHECK_EQ(h.mask, heater_steps[b].mask);
             CHECK(!heater_ctrl_sequencing(&h));
         }
     }
@@ -141,10 +144,10 @@ static void test_hysteresis(void)
     sim_now = 0;
     heater_ctrl_init(&h, sim_now);
 
-    heater_ctrl_set_setpoint(&h, 180); /* above 166, below 166 + 20 */
+    heater_ctrl_set_setpoint(&h, 180); /* above 167, below 167 + 20 */
     sim_run(&h, 500, 0, 20);
     CHECK_EQ(h.actual_step, 0);
-    heater_ctrl_set_setpoint(&h, 186);
+    heater_ctrl_set_setpoint(&h, 187);
     sim_run(&h, 500, 0, 20);
     CHECK_EQ(h.actual_step, 1);
 

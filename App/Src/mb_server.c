@@ -9,6 +9,7 @@
 #include "profile.h"
 #include "relay.h"
 #include "rs485.h"
+#include "util.h"
 
 /* Input registers, common */
 #define IREG_VERSION     0x0000
@@ -29,6 +30,11 @@
 
 #define CMD_APPLY_SERIAL 1
 #define CMD_DEFAULTS     2
+
+/* Device identification object IDs (FC 2B/0E, basic) */
+#define DEVID_VENDOR_NAME     0x00
+#define DEVID_PRODUCT_CODE    0x01
+#define DEVID_MAJOR_MINOR_REV 0x02
 
 /* Status flags, common */
 #define STATUS_COMM_TIMEOUT 0x0001
@@ -107,7 +113,7 @@ static nmbs_error cb_write_single_coil(uint16_t addr, bool value, uint8_t unit_i
 
 static uint16_t status_flags(void)
 {
-    uint16_t flags = profile.status_flags() & 0xFF00;
+    uint16_t flags = profile.status_flags() & PROFILE_STATUS_MASK;
     if (comm_timeout) {
         flags |= STATUS_COMM_TIMEOUT;
     }
@@ -298,9 +304,9 @@ static nmbs_error cb_write_single_register(uint16_t addr, uint16_t val, uint8_t 
 
 static nmbs_error cb_read_device_identification_map(nmbs_bitfield_256 map)
 {
-    nmbs_bitfield_set(map, 0x00); /* VendorName */
-    nmbs_bitfield_set(map, 0x01); /* ProductCode */
-    nmbs_bitfield_set(map, 0x02); /* MajorMinorRevision */
+    nmbs_bitfield_set(map, DEVID_VENDOR_NAME);
+    nmbs_bitfield_set(map, DEVID_PRODUCT_CODE);
+    nmbs_bitfield_set(map, DEVID_MAJOR_MINOR_REV);
     return NMBS_ERROR_NONE;
 }
 
@@ -310,13 +316,13 @@ static nmbs_error cb_read_device_identification_map(nmbs_bitfield_256 map)
 static nmbs_error cb_read_device_identification(uint8_t object_id, char buffer[NMBS_DEVICE_IDENTIFICATION_STRING_LENGTH])
 {
     switch (object_id) {
-    case 0x00:
+    case DEVID_VENDOR_NAME:
         strcpy(buffer, "rtu-relais-4ch");
         return NMBS_ERROR_NONE;
-    case 0x01:
+    case DEVID_PRODUCT_CODE:
         strcpy(buffer, profile.name);
         return NMBS_ERROR_NONE;
-    case 0x02:
+    case DEVID_MAJOR_MINOR_REV:
         strcpy(buffer, STR(FW_VERSION_MAJOR) "." STR(FW_VERSION_MINOR));
         return NMBS_ERROR_NONE;
     default:
@@ -407,7 +413,7 @@ void mb_server_poll(uint32_t now_ms)
         comm_timeout = false;
     }
     if (config.comm_timeout_s != 0 && !comm_timeout &&
-        now_ms - last_control_ms >= (uint32_t)config.comm_timeout_s * 1000) {
+        now_ms - last_control_ms >= (uint32_t)config.comm_timeout_s * MS_PER_S) {
         comm_timeout = true;
         profile.safe_state();
     }

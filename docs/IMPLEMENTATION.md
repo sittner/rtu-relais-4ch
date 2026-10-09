@@ -158,15 +158,20 @@ Wiring per [schematic](heater_rod_4_changeover_schematic.svg): 3 x 1.93 kW
 elements on L1/L2/L3/N. R3 off connects junction J to N, and R4 off connects
 the bottom of E3 to N.
 
-| Step | Mask (bit0 = R1) | Circuit                          | Power share |
-|------|------------------|----------------------------------|-------------|
-| 0    | 0x0              | off                              | 0           |
-| 1    | 0x6 (R2+R3)      | L2-E2-E3-N in series (230 V / 2R) | 1/6         |
-| 2    | 0x1 (R1)         | E1 L1-N                          | 2/6         |
-| 3    | 0xE (R2+R3+R4)   | L2-E2-E3-L3 in series (400 V / 2R) | 3/6       |
-| 4    | 0x3 (R1+R2)      | E1 + E2 to N                     | 4/6         |
-| 5    | 0xF (all)        | E1 + series pair L2-L3           | 5/6         |
-| 6    | 0xB (R1+R2+R4)   | E1, E2, E3 all to N              | 6/6         |
+| Step | Mask (bit0 = R1) | Circuit                            | Share | Power (0.1 %) |
+|------|------------------|------------------------------------|-------|---------------|
+| 0    | 0x0              | off                                | 0     | 0             |
+| 1    | 0x6 (R2+R3)      | L2-E2-E3-N in series (230 V / 2R)  | 1/6   | 167           |
+| 2    | 0x1 (R1)         | E1 L1-N                            | 2/6   | 334           |
+| 3    | 0xE (R2+R3+R4)   | L2-E2-E3-L3 in series (400 V / 2R) | 3/6   | 500           |
+| 4    | 0x3 (R1+R2)      | E1 + E2 to N                       | 4/6   | 667           |
+| 5    | 0xF (all)        | E1 + series pair L2-L3             | 5/6   | 834           |
+| 6    | 0xB (R1+R2+R4)   | E1, E2, E3 all to N                | 6/6   | 1000          |
+
+The table lives in `heater_ctrl.c` as `heater_steps[]` (mask and power per
+step). It is a lookup table rather than a formula, so other rod
+configurations with uneven steps only need a different table. The powers
+must be strictly ascending.
 
 Invariant: **R3 only with R2**. Otherwise the open contact of R2 can see
 400 V. Every step in the table satisfies it.
@@ -176,13 +181,16 @@ configuration is needed. The energy manager scales percent to watts.
 
 ### 4.2 Quantization
 
-- Step threshold: `T[k] = floor(k * 1000 / 6)` = 0, 166, 333, 500, 666, 833, 1000.
-- Reported actual value: `A[k] = round(k * 1000 / 6)` = 0, 167, 333, 500, 667, 833, 1000.
-- Target step = the highest k with `setpoint >= T[k]`, so the setpoint is
-  rounded **down**. Writing back any reported actual value always selects
-  exactly that step.
+- A step's power P[k] is its share in 0.1 %, **rounded up**. It serves both
+  as the reported actual value and as the lowest setpoint that selects the
+  step.
+- Target step = the highest k with `setpoint >= P[k]`, so the setpoint is
+  rounded **down** (e.g. 333 gives step 1, since 33.3 % < 2/6). Writing back
+  any reported actual value always selects exactly that step.
+- Rounding up means steps 2 and 5 report 33.4 % and 83.4 %, which is
+  0.07 % above the real share.
 - Up-hysteresis h: stepping up to step j requires
-  `setpoint >= min(T[j] + h, 1000)`. Stepping down uses plain `T[k]`.
+  `setpoint >= min(P[j] + h, 1000)`. Stepping down uses plain `P[k]`.
 
 ### 4.3 Hold time
 

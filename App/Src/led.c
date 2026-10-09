@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #include "main.h"
+#include "util.h"
 
 /* Blink patterns: alternating on/off durations in ms, starting with on */
 typedef struct {
@@ -14,7 +15,7 @@ static const uint16_t pat_normal[]  = { 500, 500 };
 static const uint16_t pat_timeout[] = { 100, 150, 100, 650 };
 static const uint16_t pat_ack[]     = { 50, 50 };
 
-#define PAT(p) { p, sizeof(p) / sizeof(p[0]) }
+#define PAT(p) { p, ARRAY_SIZE(p) }
 static const led_pattern_t patterns[] = {
     [LED_MODE_NORMAL]  = PAT(pat_normal),
     [LED_MODE_TIMEOUT] = PAT(pat_timeout),

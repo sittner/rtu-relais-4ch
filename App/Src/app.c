@@ -8,8 +8,11 @@
 #include "mb_server.h"
 #include "profile.h"
 #include "relay.h"
+#include "util.h"
 
 /* Factory reset: SWDIO (PA13) held low for this long after power-up */
+#define FACTORY_RESET_PORT      GPIOA
+#define FACTORY_RESET_PIN       GPIO_PIN_13
 #define FACTORY_RESET_SAMPLE_MS 50
 
 static bool wdt_reset;
@@ -22,7 +25,7 @@ static bool factory_reset_requested(void)
 {
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < FACTORY_RESET_SAMPLE_MS) {
-        if (GPIOA->IDR & GPIO_PIN_13) {
+        if (FACTORY_RESET_PORT->IDR & FACTORY_RESET_PIN) {
             return false;
         }
     }
@@ -59,8 +62,8 @@ void app_loop(void)
 
     uptime_ms_acc += now - last_tick;
     last_tick = now;
-    while (uptime_ms_acc >= 1000) {
-        uptime_ms_acc -= 1000;
+    while (uptime_ms_acc >= MS_PER_S) {
+        uptime_ms_acc -= MS_PER_S;
         uptime_s++;
     }
 

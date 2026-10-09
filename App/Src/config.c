@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "main.h"
+#include "nanomodbus.h"
 
 /*
  * Settings log in the last two flash pages (see App/STM32F030C8Tx_app.ld).
@@ -17,6 +18,19 @@
 #define RECORD_HALFWORDS 8
 #define RECORD_SIZE      (RECORD_HALFWORDS * 2)
 #define RECORDS_PER_PAGE (PAGE_SIZE / RECORD_SIZE)
+#define FLASH_ERASED     0xFFFFu
+
+/* Defaults, the comm timeout differs per variant */
+#define DEFAULT_SLAVE_ADDR 1
+#define DEFAULT_BAUD_IDX   CONFIG_BAUD_9600
+#define DEFAULT_PARITY     CONFIG_PARITY_NONE
+#ifdef FW_PROFILE_HEATER
+#define DEFAULT_COMM_TIMEOUT_S 60
+#else
+#define DEFAULT_COMM_TIMEOUT_S 0 /* off */
+#endif
+#define DEFAULT_HOLD_TIME_S 60
+#define DEFAULT_HYSTERESIS  0
 
 typedef struct {
     uint16_t magic;
@@ -36,7 +50,14 @@ _Static_assert(sizeof(record_t) == RECORD_SIZE, "record size");
 extern const uint8_t __config_start__[];
 
 const uint32_t config_baud_rates[CONFIG_BAUD_COUNT] = {
-    4800, 9600, 19200, 38400, 57600, 115200, 128000, 256000,
+    [CONFIG_BAUD_4800] = 4800,
+    [CONFIG_BAUD_9600] = 9600,
+    [CONFIG_BAUD_19200] = 19200,
+    [CONFIG_BAUD_38400] = 38400,
+    [CONFIG_BAUD_57600] = 57600,
+    [CONFIG_BAUD_115200] = 115200,
+    [CONFIG_BAUD_128000] = 128000,
+    [CONFIG_BAUD_256000] = 256000,
 };
 
 config_t config;
@@ -53,28 +74,22 @@ static const record_t *slot_ptr(uint8_t page, uint16_t slot)
     return (const record_t *)(__config_start__ + page * PAGE_SIZE + slot * RECORD_SIZE);
 }
 
-static uint16_t crc16(const uint8_t *data, uint32_t len)
+/* Modbus CRC16 from nanoMODBUS */
+static uint16_t record_crc(const record_t *r)
 {
-    uint16_t crc = 0xFFFF;
-    while (len--) {
-        crc ^= *data++;
-        for (uint8_t i = 0; i < 8; i++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;
-        }
-    }
-    return crc;
+    return nmbs_crc_calc((const uint8_t *)r, offsetof(record_t, crc), NULL);
 }
 
 static bool record_valid(const record_t *r)
 {
-    return r->magic == RECORD_MAGIC && r->crc == crc16((const uint8_t *)r, offsetof(record_t, crc));
+    return r->magic == RECORD_MAGIC && r->crc == record_crc(r);
 }
 
 static bool slot_erased(const record_t *r)
 {
     const uint16_t *hw = (const uint16_t *)r;
     for (uint8_t i = 0; i < RECORD_HALFWORDS; i++) {
-        if (hw[i] != 0xFFFF) {
+        if (hw[i] != FLASH_ERASED) {
             return false;
         }
     }
@@ -97,16 +112,12 @@ static bool settings_valid(const config_t *c)
 
 void config_get_defaults(config_t *cfg)
 {
-    cfg->slave_addr = 1;
-    cfg->baud_idx = 1; /* 9600 */
-    cfg->parity = CONFIG_PARITY_NONE;
-#ifdef FW_PROFILE_HEATER
-    cfg->comm_timeout_s = 60;
-#else
-    cfg->comm_timeout_s = 0;
-#endif
-    cfg->hold_time_s = 60;
-    cfg->hysteresis = 0;
+    cfg->slave_addr = DEFAULT_SLAVE_ADDR;
+    cfg->baud_idx = DEFAULT_BAUD_IDX;
+    cfg->parity = DEFAULT_PARITY;
+    cfg->comm_timeout_s = DEFAULT_COMM_TIMEOUT_S;
+    cfg->hold_time_s = DEFAULT_HOLD_TIME_S;
+    cfg->hysteresis = DEFAULT_HYSTERESIS;
 }
 
 void config_init(void)
@@ -197,7 +208,7 @@ bool config_save(void)
         .hold_time_s = config.hold_time_s,
         .hysteresis = config.hysteresis,
     };
-    rec.crc = crc16((const uint8_t *)&rec, offsetof(record_t, crc));
+    rec.crc = record_crc(&rec);
 
     bool ok;
     HAL_FLASH_Unlock();

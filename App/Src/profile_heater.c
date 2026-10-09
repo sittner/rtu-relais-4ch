@@ -80,7 +80,7 @@ static nmbs_error heater_write_hreg(uint16_t addr, uint16_t val, bool apply, boo
         }
         return NMBS_ERROR_NONE;
     case HREG_HYSTERESIS:
-        if (val > HEATER_SETPOINT_MAX) {
+        if (val > HEATER_POWER_FULL) {
             return NMBS_EXCEPTION_ILLEGAL_DATA_VALUE;
         }
         if (apply) {
@@ -96,7 +96,7 @@ static nmbs_error heater_read_ireg(uint16_t addr, uint16_t *val)
 {
     switch (addr) {
     case IREG_ACTUAL_POWER:
-        *val = heater_step_power[heater.actual_step];
+        *val = heater_steps[heater.actual_step].power;
         return NMBS_ERROR_NONE;
     case IREG_ACTUAL_STEP:
         *val = heater.actual_step;

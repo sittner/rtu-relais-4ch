@@ -1,22 +1,19 @@
 #include "heater_ctrl.h"
 
-/* Relay masks per step, wiring per docs/heater_rod_4_changeover_schematic.svg.
+#include "util.h"
+
+/* Steps for 3 equal elements, wiring per docs/heater_rod_4_changeover_schematic.svg.
    Invariant: R3 only together with R2. */
-const uint8_t heater_step_mask[HEATER_STEPS] = {
-    0x0, /* 0/6  off */
-    0x6, /* 1/6  R2+R3: L2-E2-E3-N */
-    0x1, /* 2/6  R1: E1 */
-    0xE, /* 3/6  R2+R3+R4: L2-E2-E3-L3 */
-    0x3, /* 4/6  R1+R2: E1+E2 */
-    0xF, /* 5/6  all: E1 + E2/E3 on L2-L3 */
-    0xB, /* 6/6  R1+R2+R4: all L-N */
+const heater_step_t heater_steps[HEATER_STEPS] = {
+    /* mask                                          power */
+    { 0,                                             0    }, /* 0/6  off */
+    { HEATER_R2 | HEATER_R3,                         167  }, /* 1/6  L2-E2-E3-N in series */
+    { HEATER_R1,                                     334  }, /* 2/6  E1 */
+    { HEATER_R2 | HEATER_R3 | HEATER_R4,             500  }, /* 3/6  L2-E2-E3-L3 in series */
+    { HEATER_R1 | HEATER_R2,                         667  }, /* 4/6  E1 + E2 */
+    { HEATER_R1 | HEATER_R2 | HEATER_R3 | HEATER_R4, 834  }, /* 5/6  E1 + E2/E3 on L2-L3 */
+    { HEATER_R1 | HEATER_R2 | HEATER_R4,             1000 }, /* 6/6  E1, E2, E3 all L-N */
 };
-
-/* floor(k * 1000 / 6): lowest setpoint selecting step k */
-const uint16_t heater_step_threshold[HEATER_STEPS] = { 0, 166, 333, 500, 666, 833, 1000 };
-
-/* round(k * 1000 / 6): reported power of step k */
-const uint16_t heater_step_power[HEATER_STEPS] = { 0, 167, 333, 500, 667, 833, 1000 };
 
 void heater_ctrl_init(heater_ctrl_t *h, uint32_t now_ms)
 {
@@ -40,7 +37,7 @@ uint8_t heater_ctrl_step_for(uint16_t setpoint)
 {
     uint8_t step = 0;
     for (uint8_t k = 1; k < HEATER_STEPS; k++) {
-        if (setpoint >= heater_step_threshold[k]) {
+        if (setpoint >= heater_steps[k].power) {
             step = k;
         }
     }
@@ -54,12 +51,12 @@ static uint8_t target_with_hysteresis(uint16_t setpoint, uint8_t current, uint16
         return down;
     }
 
-    /* Stepping up to k needs the threshold plus hysteresis (capped at 100 %) */
+    /* Stepping up to k needs its power plus hysteresis (capped at 100 %) */
     uint8_t up = current;
     for (uint8_t k = current + 1; k < HEATER_STEPS; k++) {
-        uint32_t thr = (uint32_t)heater_step_threshold[k] + hysteresis;
-        if (thr > HEATER_SETPOINT_MAX) {
-            thr = HEATER_SETPOINT_MAX;
+        uint32_t thr = (uint32_t)heater_steps[k].power + hysteresis;
+        if (thr > HEATER_POWER_FULL) {
+            thr = HEATER_POWER_FULL;
         }
         if (setpoint >= thr) {
             up = k;
@@ -82,7 +79,7 @@ static bool time_reached(uint32_t now_ms, uint32_t t)
  */
 static void sequence_run(heater_ctrl_t *h, uint32_t now_ms)
 {
-    const uint8_t b = heater_step_mask[h->seq_step];
+    const uint8_t b = heater_steps[h->seq_step].mask;
 
     while (h->seq_phase != 0 && time_reached(now_ms, h->seq_next_ms)) {
         switch (h->seq_phase) {
@@ -126,7 +123,7 @@ uint8_t heater_ctrl_poll(heater_ctrl_t *h, uint32_t now_ms, uint16_t hold_time_s
 
     if (h->seq_phase == 0 && h->target_step != h->actual_step) {
         bool up = h->target_step > h->actual_step;
-        if (up && !time_reached(now_ms, h->last_change_ms + (uint32_t)hold_time_s * 1000)) {
+        if (up && !time_reached(now_ms, h->last_change_ms + (uint32_t)hold_time_s * MS_PER_S)) {
             h->hold_active = true;
         } else {
             h->seq_step = h->target_step;
