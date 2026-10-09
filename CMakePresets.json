@@ -6,55 +6,59 @@
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
             "cacheVariables": {
             }
         },
         {
-            "name": "Debug",
+            "name": "plain-debug",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "FW_PROFILE": "plain"
             }
         },
         {
-            "name": "RelWithDebInfo",
+            "name": "plain-release",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+                "CMAKE_BUILD_TYPE": "Release",
+                "FW_PROFILE": "plain"
             }
         },
         {
-            "name": "Release",
+            "name": "heater-debug",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "FW_PROFILE": "heater"
             }
         },
         {
-            "name": "MinSizeRel",
+            "name": "heater-release",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "MinSizeRel"
+                "CMAKE_BUILD_TYPE": "Release",
+                "FW_PROFILE": "heater"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "Debug",
-            "configurePreset": "Debug"
+            "name": "plain-debug",
+            "configurePreset": "plain-debug"
         },
         {
-            "name": "RelWithDebInfo",
-            "configurePreset": "RelWithDebInfo"
+            "name": "plain-release",
+            "configurePreset": "plain-release"
         },
         {
-            "name": "Release",
-            "configurePreset": "Release"
+            "name": "heater-debug",
+            "configurePreset": "heater-debug"
         },
         {
-            "name": "MinSizeRel",
-            "configurePreset": "MinSizeRel"
+            "name": "heater-release",
+            "configurePreset": "heater-release"
         }
     ]
 }

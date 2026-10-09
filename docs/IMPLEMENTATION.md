@@ -303,6 +303,9 @@ project **switches the CubeMX toolchain to CMake**:
 - Presets: `plain-release`, `heater-release`, `plain-debug` and
   `heater-debug`.
 - Host tests: `make -C test`.
+- Build: `cmake --preset heater-release && cmake --build --preset heater-release`.
+- Flash: `cmake --build --preset <preset> --target flash` (runs
+  `st-flash --reset write <image>.bin 0x8000000`, override with `-DST_FLASH=...`).
 
 ### 5.5 RS485 driver (`rs485.c`)
 
