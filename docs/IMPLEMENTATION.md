@@ -80,6 +80,8 @@ switching sequence, so FC 05/0F give exception 01.
 | 0x0003 | common  | Status flags (see 3.4) |
 | 0x0004 | common  | Uptime in seconds, high word |
 | 0x0005 | common  | Uptime in seconds, low word |
+| 0x0006 | common  | Count of frames with a bad CRC (wraps) |
+| 0x0007 | common  | Count of UART errors: framing, noise, parity, overrun, RX buffer full (wraps) |
 | 0x0010 | heater  | Actual power in 0.1 % (0..1000), from the actual relay state |
 | 0x0011 | heater  | Actual step (0..6) |
 | 0x0012 | heater  | Target step (what the setpoint asks for, before hold time and sequencing) |
@@ -130,7 +132,7 @@ Rules:
 | Bit | Variant | Meaning |
 |-----|---------|---------|
 | 0   | common  | Communication timeout tripped. Outputs are forced to the safe state. Cleared by the next control write |
-| 1   | common  | Defaults in use: no valid config found in flash, or a factory reset was done |
+| 1   | common  | The active settings equal the variant defaults |
 | 2   | common  | Last reset was caused by the watchdog |
 | 3   | common  | Flash write error |
 | 8   | heater  | Hold active: a higher step is pending because the hold time has not passed yet |
@@ -143,7 +145,8 @@ The timeout is retriggered **only by control writes**:
 - plain: coil writes, relay mask writes, pulse timer writes
 - heater: setpoint writes
 
-A master that only reads must not keep the outputs alive. When the timeout
+A master that only reads must not keep the outputs alive. Writing the
+timeout register itself restarts the timer. When the timeout
 expires, the variant goes to its safe state (plain: all relays off; heater:
 step 0) and sets status bit 0.
 
@@ -230,8 +233,17 @@ pinned release under `third_party/nanomodbus/`, with its `LICENSE` and a
 - `nmbs_server_poll()` is called from the main loop with read timeout 0,
   so it returns immediately when there is no data. Once the first byte of a
   frame has arrived, nanoMODBUS reads the rest of it using the byte timeout.
-- The byte timeout is max(2 ms, ceil(t3.5)) at the current baud rate. It
-  is recomputed when the line settings change.
+- The byte timeout is max(20 ms, ceil(t3.5)). nanoMODBUS knows each
+  frame's length from its function code, so the timeout is only used to
+  recover from broken frames. The generous minimum tolerates gaps inside
+  frames from USB-RS485 adapters.
+- The `flush` callback (called by nanoMODBUS after an invalid frame)
+  discards bytes until the line has been idle for t3.5, for at most 100 ms.
+  This resynchronizes with the frame boundaries.
+- Before every reply, the driver waits t3.5 (busy wait on SysTick), so the
+  required silence after the request is kept.
+- Device identification (FC 2B/0E, basic): VendorName `rtu-relais-4ch`,
+  ProductCode = variant name, MajorMinorRevision = firmware version.
 - After a slave address change, the server instance is re-created.
 
 ### 5.2 Modules
@@ -302,7 +314,9 @@ project **switches the CubeMX toolchain to CMake**:
   (heater only). Output: `rtu-relais-4ch-<profile>.{elf,hex,bin}`.
 - Presets: `plain-release`, `heater-release`, `plain-debug` and
   `heater-debug`.
-- Host tests: `make -C test`.
+- Host tests: `make -C test`. They build the firmware modules with the
+  native gcc against a fake HAL, flash and UART (`test/stubs/`), and run
+  Modbus frames through the real nanoMODBUS server.
 - Build: `cmake --preset heater-release && cmake --build --preset heater-release`.
 - Flash: `cmake --build --preset <preset> --target flash` (runs
   `st-flash --reset write <image>.bin 0x8000000`, override with `-DST_FLASH=...`).
