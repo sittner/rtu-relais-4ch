@@ -65,14 +65,19 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app.c
+    App/Src/config.c
     App/Src/led.c
+    App/Src/mb_server.c
     App/Src/relay.c
+    App/Src/rs485.c
+    third_party/nanomodbus/nanomodbus.c
     App/Src/profile_${FW_PROFILE}.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     App/Inc
+    third_party/nanomodbus
 )
 
 # Add project symbols (macros)
@@ -80,6 +85,13 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     FW_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     FW_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     $<$<STREQUAL:${FW_PROFILE},heater>:FW_PROFILE_HEATER>
+    # nanoMODBUS: server only, unused function codes compiled out
+    NMBS_CLIENT_DISABLED
+    NMBS_STRERROR_DISABLED
+    NMBS_SERVER_READ_DISCRETE_INPUTS_DISABLED
+    NMBS_SERVER_READ_FILE_RECORD_DISABLED
+    NMBS_SERVER_WRITE_FILE_RECORD_DISABLED
+    NMBS_SERVER_READ_WRITE_REGISTERS_DISABLED
 )
 
 # Add linked libraries
