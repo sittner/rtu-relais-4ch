@@ -65,6 +65,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app.c
+    App/Src/led.c
+    App/Src/relay.c
     App/Src/profile_${FW_PROFILE}.c
 )
 
