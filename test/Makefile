@@ -19,11 +19,15 @@ all: run
 $(BUILD)/test_plain: test_plain.c ../App/Src/profile_plain.c $(COMMON) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
+$(BUILD)/test_heater: test_heater.c ../App/Src/profile_heater.c ../App/Src/heater_ctrl.c $(COMMON) | $(BUILD)
+	$(CC) $(CFLAGS) -DFW_PROFILE_HEATER -o $@ $^
+
 $(BUILD):
 	mkdir -p $@
 
-run: $(BUILD)/test_plain
+run: $(BUILD)/test_plain $(BUILD)/test_heater
 	$(BUILD)/test_plain
+	$(BUILD)/test_heater
 
 clean:
 	rm -rf $(BUILD)

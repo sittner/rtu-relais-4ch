@@ -228,6 +228,13 @@ static void test_flash_log(void)
     fresh_boot();
     int erases = fake_flash_erases;
 
+    /* first boot with empty flash: defaults are not written */
+    run_for(100);
+    CHECK_EQ(fake_flash_erases, erases);
+    uint16_t v = 0;
+    read_regs(1, 0x04, 0x0003, 1, &v);
+    CHECK_EQ(v & 0x0008, 0);
+
     /* many changes: wraps across both pages several times */
     for (uint16_t i = 1; i <= 300; i++) {
         write_reg(1, 0x0000, i);

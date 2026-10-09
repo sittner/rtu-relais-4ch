@@ -34,7 +34,8 @@ void config_init(void);
 /* Variant defaults */
 void config_get_defaults(config_t *cfg);
 
-/* Write the active settings to flash if they differ from the stored ones.
+/* Write the active settings to flash if they differ from the stored ones
+   (cheap no-op otherwise). After a flash error no further writes are tried.
    Returns false on a flash error. */
 bool config_save(void);
 

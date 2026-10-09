@@ -46,7 +46,6 @@ static uint8_t staged_baud;
 static uint8_t staged_parity;
 
 /* Actions run after the reply has been sent */
-static bool pending_save;
 static bool pending_apply_serial;
 static bool pending_defaults;
 
@@ -205,10 +204,7 @@ static nmbs_error write_hreg(uint16_t addr, uint16_t val, bool apply)
     switch (addr) {
     case HREG_COMM_TIMEOUT:
         if (apply) {
-            if (config.comm_timeout_s != val) {
-                config.comm_timeout_s = val;
-                pending_save = true;
-            }
+            config.comm_timeout_s = val;
             /* Restart the timeout with the new value */
             control_write = true;
         }
@@ -401,10 +397,9 @@ void mb_server_poll(uint32_t now_ms)
         config_save();
         apply_serial();
     }
-    if (pending_save) {
-        pending_save = false;
-        config_save();
-    }
+    /* Persistent registers write to config directly; this is a no-op
+       unless something changed */
+    config_save();
 
     if (control_write) {
         control_write = false;

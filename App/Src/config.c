@@ -41,8 +41,8 @@ const uint32_t config_baud_rates[CONFIG_BAUD_COUNT] = {
 
 config_t config;
 
-static config_t stored;        /* what is in flash */
-static bool stored_valid;
+static config_t stored;        /* what is in flash (defaults if nothing) */
+static bool log_valid;         /* a valid record exists */
 static uint8_t active_page;    /* page holding the newest record */
 static uint16_t next_slot;     /* next free slot in active_page */
 static uint16_t seq;           /* sequence number of the newest record */
@@ -139,7 +139,7 @@ void config_init(void)
         if (settings_valid(&c)) {
             seq = newest->seq;
             stored = c;
-            stored_valid = true;
+            log_valid = true;
             config = c;
             return;
         }
@@ -149,8 +149,9 @@ void config_init(void)
     active_page = 0;
     next_slot = RECORDS_PER_PAGE;
     seq = 0;
-    stored_valid = false;
+    log_valid = false;
     config_get_defaults(&config);
+    stored = config;
 }
 
 static bool erase_page(uint8_t page)
@@ -177,8 +178,12 @@ static bool program_record(const record_t *slot, const record_t *rec)
 
 bool config_save(void)
 {
-    if (stored_valid && config_equal(&stored, &config)) {
+    if (config_equal(&stored, &config)) {
         return true;
+    }
+    /* Do not retry (and block in erase) on every call after a failure */
+    if (flash_error) {
+        return false;
     }
 
     record_t rec = {
@@ -202,11 +207,11 @@ bool config_save(void)
     } else {
         /* Page full (or no log yet): continue on the other page */
         uint8_t old_page = active_page;
-        uint8_t new_page = stored_valid ? (uint8_t)(active_page ^ 1) : 0;
+        uint8_t new_page = log_valid ? (uint8_t)(active_page ^ 1) : 0;
         ok = erase_page(new_page) && program_record(slot_ptr(new_page, 0), &rec);
         /* Without a valid log, page 1 may hold stale records: erase it too */
         if (ok) {
-            ok = erase_page(stored_valid ? old_page : 1);
+            ok = erase_page(log_valid ? old_page : 1);
         }
         active_page = new_page;
         next_slot = 1;
@@ -219,7 +224,7 @@ bool config_save(void)
     }
     seq = rec.seq;
     stored = config;
-    stored_valid = true;
+    log_valid = true;
     return true;
 }
 

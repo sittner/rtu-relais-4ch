@@ -66,6 +66,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/app.c
     App/Src/config.c
+    App/Src/heater_ctrl.c
     App/Src/led.c
     App/Src/mb_server.c
     App/Src/relay.c
