@@ -250,16 +250,27 @@ def restore(fn):
         print(f"  WARN  could not restore the settings: {e}")
 
 
+def test_timeout_for(old):
+    """Comm timeout for the test: differs from the stored one, so the test
+    always writes to flash (test value and restore)."""
+    return 3 if old == 2 else 2
+
+
+def set_comm_timeout(c, t):
+    c.write_reg(0x0000, t)
+    check(c.hreg(0x0000) == t, f"comm timeout register = {t} s (saved to flash)")
+
+
 def test_plain(c):
     print("plain variant")
     old_timeout = c.hreg(0x0000)
     try:
-        _test_plain(c)
+        _test_plain(c, test_timeout_for(old_timeout))
     finally:
         restore(lambda: (c.write_reg(0x0000, old_timeout), c.write_reg(0x0010, 0)))
 
 
-def _test_plain(c):
+def _test_plain(c, timeout):
     c.write_reg(0x0010, 0)
     c.write_coil(0, 0xFF00)
     check(c.read_coils() == 0x01, "FC 05 relay 1 on")
@@ -291,12 +302,12 @@ def _test_plain(c):
     check(0.9 <= dt <= 1.2, f"pulse: relay off after {dt:.2f} s")
 
     # comm timeout
-    c.write_reg(0x0000, 2)
+    set_comm_timeout(c, timeout)
     c.write_reg(0x0010, 0x0F)
-    time.sleep(1.5)
-    check(c.read_coils() == 0x0F, "comm timeout: still on after 1.5 s (reads only)")
+    time.sleep(timeout - 0.5)
+    check(c.read_coils() == 0x0F, f"comm timeout: still on after {timeout - 0.5} s (reads only)")
     time.sleep(1.0)
-    check(c.read_coils() == 0x00, "comm timeout: relays off after 2 s")
+    check(c.read_coils() == 0x00, f"comm timeout: relays off after {timeout} s")
     check(c.ireg(3) & 0x0001, "comm timeout: status bit 0")
     c.write_coil(0, 0x0000)
     check(not (c.ireg(3) & 0x0001), "comm timeout: cleared by a control write")
@@ -307,13 +318,13 @@ def test_heater(c):
     old_hold, old_hyst = c.hreg(0x0011, 2)
     old_timeout = c.hreg(0x0000)
     try:
-        _test_heater(c)
+        _test_heater(c, test_timeout_for(old_timeout))
     finally:
         restore(lambda: (c.write_reg(0x0010, 0), c.write_regs(0x0011, [old_hold, old_hyst]),
                          c.write_reg(0x0000, old_timeout)))
 
 
-def _test_heater(c):
+def _test_heater(c, timeout):
     expect_exc(1, lambda: c.write_coil(0, 0xFF00), "coil writes not supported")
     expect_exc(3, lambda: c.write_reg(0x0010, 1001), "setpoint above 100 %")
 
@@ -347,11 +358,19 @@ def _test_heater(c):
     check(c.ireg(0x0011) == 1, "hold time: step down immediate")
 
     # comm timeout
-    c.write_reg(0x0000, 2)
+    set_comm_timeout(c, timeout)
     c.write_reg(0x0010, 333)
-    time.sleep(2.5)
+    time.sleep(timeout + 0.5)
     check(c.ireg(0x0011) == 0 and c.read_coils() == 0, "comm timeout: step 0")
     check(c.ireg(3) & 0x0001, "comm timeout: status bit 0")
+
+
+def check_health(c, uart_errors_before):
+    """No flash error, no frames lost (e.g. during a flash erase)."""
+    print("health")
+    check(not (c.ireg(3) & 0x0008), "no flash error (status bit 3)")
+    new = (c.ireg(7) - uart_errors_before) & 0xFFFF
+    check(new == 0, f"no new UART errors ({new})")
 
 
 def test_serial(c, bauds, parities):
@@ -403,11 +422,13 @@ def main():
             return 1
 
     c = Client(args.port, args.baud, args.parity, args.addr, args.timeout, args.echo)
+    uart_errors = c.ireg(7)
     prof = test_common(c)
     if prof == PROFILE_PLAIN:
         test_plain(c)
     elif prof == PROFILE_HEATER:
         test_heater(c)
+    check_health(c, uart_errors)
     if args.serial_test:
         test_serial(c, [int(b) for b in args.bauds.split(",")], args.parities)
 

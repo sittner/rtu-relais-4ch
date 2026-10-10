@@ -452,7 +452,10 @@ heater variant, `--serial-test` and the factory reset.
 - **Device test:** `tools/test_device.py --port /dev/ttyUSB0` (needs
   pyserial). It detects the variant and checks common registers,
   exceptions, broadcast, the other-slave case, the pulse timer, the comm
-  timeout, the heater step walk and the hold time. `--serial-test` cycles
+  timeout, the heater step walk and the hold time. The comm timeout test
+  uses a value that differs from the stored one (2 s, or 3 s if 2 s is
+  stored), so every run writes to flash. At the end it checks that the
+  flash error flag is clear and that the UART error counter did not grow. `--serial-test` cycles
   through baud rates (`--bauds`) and parities (`--parities`) and then
   restores the original settings. `--echo` is for adapters that receive
   their own transmission. Like a Modbus master, the script retries once
