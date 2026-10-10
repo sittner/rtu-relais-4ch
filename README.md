@@ -79,8 +79,11 @@ The output is `build/<preset>/rtu-relais-4ch-<variant>.{elf,hex,bin}`.
 
 ## Flashing
 
-The board has no bootloader. Flash via SWD with an ST-Link. The `flash`
-target builds first, but the preset has to be configured once (see above):
+The firmware has no update bootloader of its own: it is flashed via SWD
+with an ST-Link at 0x08000000. (The STM32F030's ROM bootloader on USART1,
+entered with BOOT0 high at reset, is still there but not needed.) The
+`flash` target builds first, but the preset has to be configured once
+(see above):
 
 ```sh
 cmake --preset heater-release     # once per build directory
@@ -88,8 +91,16 @@ cmake --build --preset heater-release --target flash
 # same as: st-flash --reset write build/heater-release/rtu-relais-4ch-heater.bin 0x8000000
 ```
 
-Flashing replaces the stock firmware. Back it up first if you might want
-it back (if the chip's read protection allows it).
+**Stock boards are read-protected (RDP level 1)**: `st-flash` cannot
+write until the protection is removed, and removing it mass-erases the
+chip, so the stock firmware is gone and cannot be backed up. Remove it
+once with OpenOCD and then power-cycle the board (the new option bytes are
+loaded at power-up):
+
+```sh
+openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
+    -c "init; reset halt; stm32f1x unlock 0; shutdown"
+```
 
 ## Testing
 

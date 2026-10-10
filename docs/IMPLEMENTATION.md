@@ -31,12 +31,15 @@ with GPLv3, so the firmware binary is distributed under GPLv3.
 | Status LED    | LED_STATE = PC13, **active low**                              |
 | RS485         | USART1 TX = PA9, RX = PA10, isolated transceiver              |
 | RS485 dir.    | No MCU-controlled DE/RE: the transceiver switches direction itself |
+| Relay drivers | Optocoupler inputs. With the MCU pins high-Z (reset, before GPIO init, watchdog reset) the relays are off (verified) |
 | Bus idle bias | A-B = 3.5 V idle without termination (strong fail-safe bias)  |
 | TXD/RXD LEDs  | Hardware driven, not connected to the MCU                     |
 | SWD           | PA13 (SWDIO), PA14 (SWCLK)                                    |
 
-The board is flashed via SWD at 0x08000000 (no bootloader). The stock flash
-has been erased.
+The board is flashed via SWD at 0x08000000. The firmware has no update
+bootloader; the STM32F030 ROM bootloader (USART1, BOOT0 high) is not used.
+Stock boards have read protection level 1, which has to be removed first
+(see the README). That mass-erases the stock firmware.
 
 ## 2. Protocol Principles
 
@@ -233,7 +236,18 @@ timer starts when the sequence is complete. A host unit test checks all
 
 - On a reset (watchdog, brown-out) or power loss, all relays release at the
   same time and in random order. The sequence cannot be guaranteed then.
-  This is brief, and the end state (all off) is safe.
+  This is brief, and the end state (all off) is safe. While the MCU is in
+  reset or before the GPIOs are initialized, the pins are high-Z and the
+  optocoupler-driven relays stay off (see 1), so a watchdog reset cannot
+  energize a relay.
+- A flash page erase (settings write, 5.6) stalls the CPU for 20 to 40 ms.
+  It can fall into a switching sequence, but it cannot split a phase: each
+  phase writes its relays in one call before the stall can start. The
+  stall only lengthens the pause before the next phase, and every
+  intermediate state satisfies the invariant. The SysTick interrupt is
+  pended only once during the stall, so tick-based timings (pause, hold
+  time, comm timeout, pulse timers) are stretched by up to the stall time,
+  never shortened.
 - The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). The
   Waveshare product page rates the board at 20 A (NO) / 10 A (NC) at
   240 VAC, matching the fitted HLS-T90 (15F) relays (1C: 20 A / 10 A at
@@ -455,11 +469,17 @@ project **switches the CubeMX toolchain to CMake**:
 Same procedure as the stock bootloader: short **SWDIO (PA13) to GND at
 power-up**.
 
-- `app_init()` samples PA13 for about 50 ms. The pin stays in SWD AF mode,
-  because IDR still reflects the pin level and SWDIO has an internal
-  pull-up.
-- If PA13 stays low, the defaults are written and the LED confirms with
-  fast blinks.
+- `app_init()` samples PA13 for about 50 ms, right after the settings are
+  loaded and before the Modbus server starts. Nothing else touches PA13:
+  CubeMX leaves PA13/PA14 in SWD mode and `MX_GPIO_Init()` does not
+  configure them. IDR still reflects the pin level, and SWDIO has an
+  internal pull-up.
+- If PA13 stays low for the whole window, the defaults are written and
+  the LED confirms with fast blinks. A debugger that is connected during
+  the window does not trigger it: SWD traffic and the idle level drive
+  SWDIO high at least once in 50 ms. A probe holding SWDIO low for
+  the whole window (connect-under-reset) would, and the result is only a
+  reset to the defaults, never an unsafe state.
 - Command 2 on holding register 0x010F does the same over Modbus.
 
 ### 5.9 Watchdog
