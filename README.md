@@ -78,9 +78,11 @@ The output is `build/<preset>/rtu-relais-4ch-<variant>.{elf,hex,bin}`.
 
 ## Flashing
 
-The board has no bootloader. Flash via SWD with an ST-Link:
+The board has no bootloader. Flash via SWD with an ST-Link. The `flash`
+target builds first, but the preset has to be configured once (see above):
 
 ```sh
+cmake --preset heater-release     # once per build directory
 cmake --build --preset heater-release --target flash
 # same as: st-flash --reset write build/heater-release/rtu-relais-4ch-heater.bin 0x8000000
 ```
