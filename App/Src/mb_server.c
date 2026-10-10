@@ -42,6 +42,7 @@
 #define STATUS_DEFAULTS     0x0002
 #define STATUS_WDT_RESET    0x0004
 #define STATUS_FLASH_ERROR  0x0008
+#define STATUS_SAVE_PENDING 0x0010
 
 static nmbs_t nmbs;
 static nmbs_platform_conf platform;
@@ -126,6 +127,9 @@ static uint16_t status_flags(void)
     }
     if (config_flash_error()) {
         flags |= STATUS_FLASH_ERROR;
+    }
+    if (config_save_pending()) {
+        flags |= STATUS_SAVE_PENDING;
     }
     return flags;
 }
@@ -383,7 +387,15 @@ void mb_server_init(void)
 
 void mb_server_poll(uint32_t now_ms)
 {
-    if (nmbs_server_poll(&nmbs) == NMBS_ERROR_CRC) {
+    /*
+     * Count bad CRCs only on frames for this device. nanoMODBUS frames by
+     * length, so on a multi-drop bus it also parses the other slaves'
+     * replies as requests, and their CRC check fails depending on the
+     * length. msg.unit_id is nanoMODBUS state, valid until the next poll
+     * (pinned version, see third_party/nanomodbus/VERSION).
+     */
+    if (nmbs_server_poll(&nmbs) == NMBS_ERROR_CRC &&
+        (nmbs.msg.unit_id == config.slave_addr || nmbs.msg.unit_id == NMBS_BROADCAST_ADDRESS)) {
         crc_errors++;
     }
 

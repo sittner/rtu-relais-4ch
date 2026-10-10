@@ -44,6 +44,8 @@ extern int rsp_len; /* -1: no response */
 
 /* Send a request PDU to unit, run one server poll, decode the reply */
 void transact(uint8_t unit, const uint8_t *pdu, int len);
+/* Same, with a corrupted CRC */
+void transact_bad_crc(uint8_t unit, const uint8_t *pdu, int len);
 
 /* Helpers building common requests, all return the response length */
 int read_regs(uint8_t unit, uint8_t fc, uint16_t addr, uint16_t qty, uint16_t *out);
@@ -56,10 +58,18 @@ int read_coils(uint8_t unit, uint16_t addr, uint16_t qty, uint8_t *bits);
 /* Exception code of the last response, 0 if none */
 int last_exception(void);
 
+/* Settings record layout (config.c), slot = offset / CFG_RECORD_SIZE */
+#define CFG_RECORD_SIZE    32
+#define CFG_RECORD_VARIANT 3 /* offset of the variant byte */
+
 /* Write a settings record into page 0 of the fake flash, as another
-   firmware (variant, version) would have */
+   firmware (variant) would have */
 void put_config_record(uint16_t slot, uint16_t seq, uint8_t variant, uint8_t addr, uint8_t baud, uint8_t parity,
                        uint16_t timeout, uint16_t hold, uint16_t hyst);
+
+/* Flash write rate limit of config.c */
+#define CFG_WRITE_BURST     32
+#define CFG_WRITE_REFILL_MS 60000
 
 /* Advance fake time and run the main loop pieces */
 void run_for(uint32_t ms);

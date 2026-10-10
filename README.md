@@ -24,10 +24,11 @@ Two variants are built from one code base:
   parity are configurable over Modbus. They are staged and applied by an
   explicit command, so the master can't lock itself out halfway.
 - Settings in flash (wear-levelled log in the last 2 pages), written only
-  when a value changes.
+  when a value changes, with a write rate limit against a master that
+  toggles a persistent register cyclically.
 - Communication timeout: without control writes for N seconds, the outputs
   go to a safe state (plain: all off; heater: step 0).
-- Independent watchdog (about 1 s), status and diagnostic registers
+- Independent watchdog (about 2 s), status and diagnostic registers
   (uptime, CRC and UART error counters, reset cause).
 - Factory reset: hold SWDIO (PA13) to GND at power-up, or write command 2
   over Modbus.

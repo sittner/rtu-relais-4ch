@@ -47,9 +47,14 @@ void config_init(void);
 void config_get_defaults(config_t *cfg);
 
 /* Write the active settings to flash if they differ from the stored ones
-   (cheap no-op otherwise). After a flash error no further writes are tried.
-   Returns false on a flash error. */
+   (cheap no-op otherwise). The write rate is limited (see config.c): a
+   deferred write is retried on the next calls. After a flash error no
+   further writes are tried. Returns false on a flash error. */
 bool config_save(void);
+
+/* The active settings differ from the stored ones: a write is deferred by
+   the rate limit (status bit 4) */
+bool config_save_pending(void);
 
 /* The active settings equal the variant defaults */
 bool config_defaults_used(void);
