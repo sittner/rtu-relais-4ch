@@ -22,7 +22,7 @@ tools/test_device.py --port /dev/ttyUSB0 [--serial-test]   # on hardware or a si
 
 Presets: `plain-debug`, `plain-release`, `heater-debug`, `heater-release`
 (variant = `-DFW_PROFILE=plain|heater`). Run the host tests and build all
-four presets before committing; builds must stay free of warnings in `App/`.
+four presets before committing; builds must stay free of warnings (the ST HAL in `Drivers/` is built with `-w`).
 
 ## Layout
 

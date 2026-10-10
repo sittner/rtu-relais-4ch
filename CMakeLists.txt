@@ -57,6 +57,10 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
+# ST HAL is vendor code: no warnings from Drivers/ (ours stay strict)
+file(GLOB HAL_SOURCES ${CMAKE_SOURCE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/*.c)
+set_source_files_properties(${HAL_SOURCES} PROPERTIES COMPILE_OPTIONS -w)
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
