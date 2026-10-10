@@ -235,9 +235,9 @@ timer starts when the sequence is complete. A host unit test checks all
   same time and in random order. The sequence cannot be guaranteed then.
   This is brief, and the end state (all off) is safe.
 - The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). The
-  fitted relays are HLS-T90 (15F), rated 30 A at 240 VAC with no separate
-  NC rating, so the relay itself has ample margin. The limit is the board
-  (PCB traces, terminals): the Waveshare wiki gives 10 A per channel.
+  Waveshare product page rates the board at 20 A (NO) / 10 A (NC) at
+  240 VAC, so the NC case has the smallest margin. The fitted relays are
+  HLS-T90 (15F), rated 30 A at 240 VAC with no separate NC rating.
 
 ## 5. Software Architecture
 
