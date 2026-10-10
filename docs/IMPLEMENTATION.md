@@ -433,9 +433,10 @@ We use the **IWDG**:
 
 ## 7. Implementation Steps
 
-All steps are implemented. The plain variant passed the device test on
-hardware (9600 8N1, adapter without echo). Still open on hardware: the
-heater variant, `--serial-test` and the factory reset.
+All steps are implemented. Both variants passed the device test on
+hardware (9600 8N1, adapter without echo), including the switch from plain
+to heater with stored settings. Still open on hardware: `--serial-test`
+and the factory reset.
 
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
