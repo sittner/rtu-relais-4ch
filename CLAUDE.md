@@ -22,7 +22,7 @@ tools/test_device.py --port /dev/ttyUSB0 [--serial-test]   # on hardware or a si
 
 Presets: `plain-debug`, `plain-release`, `heater-debug`, `heater-release`
 (variant = `-DFW_PROFILE=plain|heater`). Run the host tests and build all
-four presets before committing; builds must stay free of warnings in `App/`.
+four presets before committing; builds must stay free of warnings (the ST HAL in `Drivers/` is built with `-w`).
 
 ## Layout
 
@@ -46,8 +46,9 @@ four presets before committing; builds must stay free of warnings in `App/`.
   after `project()`, because `project()` re-reads the toolchain file.
 - Our code owns `USART1_IRQHandler`. Leave the USART1 interrupt disabled in
   CubeMX.
-- The watchdog (~1 s) is refreshed only at the end of `app_loop()`. Nothing
-  in the loop may block for long (worst case today: a long reply at 4800 baud).
+- The watchdog (~2 s, 1.6 s worst case) is refreshed only at the end of
+  `app_loop()`. Nothing in the loop may block for long; the budget is in
+  `docs/IMPLEMENTATION.md` 5.9 (worst case today: about 1 s at 4800 baud).
 - Heater safety: R3 only together with R2, and R3 never switches together
   with another relay (`heater_ctrl.c` sequencer). Never write relays directly
   in the heater variant. `test_heater.c` checks all transitions.

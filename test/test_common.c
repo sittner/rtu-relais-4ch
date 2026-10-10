@@ -20,11 +20,14 @@ static uint16_t crc16(const uint8_t *d, size_t n)
     return crc;
 }
 
-void transact(uint8_t unit, const uint8_t *pdu, int len)
+static void transact_crc(uint8_t unit, const uint8_t *pdu, int len, bool good_crc)
 {
     fake_rx[0] = unit;
     memcpy(fake_rx + 1, pdu, len);
     uint16_t crc = crc16(fake_rx, len + 1);
+    if (!good_crc) {
+        crc ^= 0x5A5A;
+    }
     fake_rx[len + 1] = crc & 0xFF;
     fake_rx[len + 2] = crc >> 8;
     fake_rx_len = len + 3;
@@ -47,6 +50,16 @@ void transact(uint8_t unit, const uint8_t *pdu, int len)
         printf("  short response\n");
         test_failures++;
     }
+}
+
+void transact(uint8_t unit, const uint8_t *pdu, int len)
+{
+    transact_crc(unit, pdu, len, true);
+}
+
+void transact_bad_crc(uint8_t unit, const uint8_t *pdu, int len)
+{
+    transact_crc(unit, pdu, len, false);
 }
 
 int last_exception(void)
@@ -121,13 +134,16 @@ void run_for(uint32_t ms)
 void put_config_record(uint16_t slot, uint16_t seq, uint8_t variant, uint8_t addr, uint8_t baud, uint8_t parity,
                        uint16_t timeout, uint16_t hold, uint16_t hyst)
 {
-    /* Layout of record_t in config.c (little endian) */
-    uint8_t r[16] = {
-        0xF1, 0xC0, seq & 0xFF, seq >> 8, addr, baud, parity, variant,
+    /* Layout of record_t in config.c (little endian), reserved bytes erased */
+    uint8_t r[CFG_RECORD_SIZE];
+    memset(r, 0xFF, sizeof(r));
+    const uint8_t head[] = {
+        0xF2, 0xC0, 1, variant, seq & 0xFF, seq >> 8, addr, baud, parity, 0xFF,
         timeout & 0xFF, timeout >> 8, hold & 0xFF, hold >> 8, hyst & 0xFF, hyst >> 8,
     };
-    uint16_t crc = nmbs_crc_calc(r, 14, NULL);
-    r[14] = crc & 0xFF;
-    r[15] = crc >> 8;
+    memcpy(r, head, sizeof(head));
+    uint16_t crc = nmbs_crc_calc(r, sizeof(r) - 2, NULL);
+    r[sizeof(r) - 2] = crc & 0xFF;
+    r[sizeof(r) - 1] = crc >> 8;
     memcpy(__config_start__ + slot * sizeof(r), r, sizeof(r));
 }

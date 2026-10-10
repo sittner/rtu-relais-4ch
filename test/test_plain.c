@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "main.h"
+#include "nanomodbus.h"
 #include "profile.h"
 #include "relay.h"
 
@@ -238,16 +239,20 @@ static void test_flash_log(void)
 
     /*
      * Blank flash: the first page is not erased. Then exactly one erase per
-     * page switch (an erase stalls the UART, see config.c).
+     * page switch (an erase stalls the UART, see config.c). Time advances
+     * between the writes, so the rate limit does not defer them.
      */
-    const uint16_t per_page = FLASH_PAGE_SIZE / 16;
+    const uint16_t per_page = FLASH_PAGE_SIZE / CFG_RECORD_SIZE;
     for (uint16_t i = 1; i <= per_page; i++) {
+        fake_tick += CFG_WRITE_REFILL_MS;
         write_reg(1, 0x0000, i);
     }
     CHECK_EQ(fake_flash_erases, erases);
+    fake_tick += CFG_WRITE_REFILL_MS;
     write_reg(1, 0x0000, per_page + 1); /* to page 1, blank */
     CHECK_EQ(fake_flash_erases, erases);
     for (uint16_t i = per_page + 2; i <= 2 * per_page + 1; i++) {
+        fake_tick += CFG_WRITE_REFILL_MS;
         write_reg(1, 0x0000, i);
     }
     CHECK_EQ(fake_flash_erases, erases + 1); /* back to page 0 */
@@ -256,6 +261,7 @@ static void test_flash_log(void)
 
     /* many changes: wraps across both pages several times */
     for (uint16_t i = 1; i <= 300; i++) {
+        fake_tick += CFG_WRITE_REFILL_MS;
         write_reg(1, 0x0000, i);
         CHECK_EQ(rsp_len, 5);
     }
@@ -285,7 +291,7 @@ static void test_variant_switch(void)
     CHECK_EQ(config.hold_time_s, 60);
     CHECK_EQ(config.hysteresis, 0);
     run_for(1);
-    CHECK_EQ(__config_start__[16 + 7], PROFILE_ID_PLAIN);
+    CHECK_EQ(__config_start__[CFG_RECORD_SIZE + CFG_RECORD_VARIANT], PROFILE_ID_PLAIN);
 
     /* own variant: taken as is */
     fake_flash_erase_all();
@@ -295,7 +301,85 @@ static void test_variant_switch(void)
     CHECK_EQ(config.hold_time_s, 30);
     CHECK_EQ(config.hysteresis, 5);
     run_for(1);
-    CHECK_EQ(__config_start__[16], 0xFF); /* nothing rewritten */
+    CHECK_EQ(__config_start__[CFG_RECORD_SIZE], 0xFF); /* nothing rewritten */
+}
+
+/*
+ * Flash write rate limit: a burst of writes lands at once, further changes
+ * are deferred (status bit 4) and written once a minute, latest value wins.
+ */
+static void test_write_rate_limit(void)
+{
+    fresh_boot();
+    uint16_t v = 0;
+
+    for (uint16_t i = 1; i <= CFG_WRITE_BURST; i++) {
+        write_reg(1, 0x0000, i);
+    }
+    read_regs(1, 0x04, 0x0003, 1, &v);
+    CHECK_EQ(v & 0x0010, 0);
+    CHECK_EQ(__config_start__[(CFG_WRITE_BURST - 1) * CFG_RECORD_SIZE], 0xF2);
+    CHECK_EQ(__config_start__[CFG_WRITE_BURST * CFG_RECORD_SIZE], 0xFF);
+
+    write_reg(1, 0x0000, 100);
+    CHECK_EQ(rsp_len, 5);
+    read_regs(1, 0x04, 0x0003, 1, &v);
+    CHECK_EQ(v & 0x0010, 0x0010); /* deferred */
+    CHECK_EQ(__config_start__[CFG_WRITE_BURST * CFG_RECORD_SIZE], 0xFF);
+    write_reg(1, 0x0000, 101);
+    run_for(CFG_WRITE_REFILL_MS - 100);
+    CHECK(config_save_pending());
+    run_for(100);
+    CHECK(!config_save_pending());
+    read_regs(1, 0x04, 0x0003, 1, &v);
+    CHECK_EQ(v & 0x0010, 0);
+    CHECK_EQ(__config_start__[CFG_WRITE_BURST * CFG_RECORD_SIZE], 0xF2);
+    CHECK_EQ(__config_start__[(CFG_WRITE_BURST + 1) * CFG_RECORD_SIZE], 0xFF); /* one record for both */
+    boot();
+    CHECK_EQ(config.comm_timeout_s, 101);
+
+    /* a reboot resets the bucket */
+    write_reg(1, 0x0000, 102);
+    CHECK(!config_save_pending());
+}
+
+/* Records of the 16-byte pre-release format (magic 0xC0F1) are not read */
+static void test_old_record_format(void)
+{
+    fake_flash_erase_all();
+    uint8_t r[16] = { 0xF1, 0xC0, 1, 0, 9, CONFIG_BAUD_19200, CONFIG_PARITY_ODD, PROFILE_ID_PLAIN, 60, 0, 30, 0, 5, 0 };
+    uint16_t crc = nmbs_crc_calc(r, 14, NULL);
+    r[14] = crc & 0xFF;
+    r[15] = crc >> 8;
+    memcpy(__config_start__, r, sizeof(r));
+    boot();
+    CHECK(config_defaults_used());
+    CHECK_EQ(config.slave_addr, 1);
+    /* the next write starts a fresh log: both pages erased */
+    int erases = fake_flash_erases;
+    write_reg(1, 0x0000, 7);
+    CHECK_EQ(fake_flash_erases, erases + 1); /* page 0; page 1 is blank */
+    boot();
+    CHECK_EQ(config.comm_timeout_s, 7);
+}
+
+/* CRC errors are counted for frames to this device and broadcasts only */
+static void test_crc_counter(void)
+{
+    fresh_boot();
+    uint16_t v = 0;
+    const uint8_t pdu[] = { 0x04, 0, 0, 0, 1 };
+
+    transact_bad_crc(1, pdu, sizeof(pdu));
+    CHECK_EQ(rsp_len, -1);
+    read_regs(1, 0x04, 0x0006, 1, &v);
+    CHECK_EQ(v, 1);
+    transact_bad_crc(0, pdu, sizeof(pdu));
+    read_regs(1, 0x04, 0x0006, 1, &v);
+    CHECK_EQ(v, 2);
+    transact_bad_crc(2, pdu, sizeof(pdu)); /* another slave's frame */
+    read_regs(1, 0x04, 0x0006, 1, &v);
+    CHECK_EQ(v, 2);
 }
 
 int main(void)
@@ -308,6 +392,9 @@ int main(void)
     RUN(test_comm_timeout);
     RUN(test_flash_log);
     RUN(test_variant_switch);
+    RUN(test_write_rate_limit);
+    RUN(test_old_record_format);
+    RUN(test_crc_counter);
 
     printf(test_failures ? "%d FAILURE(S)\n" : "all passed\n", test_failures);
     return test_failures ? 1 : 0;

@@ -189,15 +189,17 @@ static void test_variant_switch(void)
         CHECK_EQ(config.hold_time_s, 60);
         CHECK_EQ(config.hysteresis, 0);
 
-        /* rewritten as a heater record, kept after a reboot */
+        /* rewritten as a heater record (seq 8), kept after a reboot */
         run_for(1);
-        CHECK(memcmp(__config_start__ + 16, "\xF1\xC0\x08\x00", 4) == 0);
-        CHECK_EQ(__config_start__[16 + 7], PROFILE_ID_HEATER);
+        const uint8_t *slot1 = __config_start__ + CFG_RECORD_SIZE;
+        CHECK(memcmp(slot1, "\xF2\xC0\x01", 3) == 0);
+        CHECK_EQ(slot1[CFG_RECORD_VARIANT], PROFILE_ID_HEATER);
+        CHECK_EQ(slot1[4] | slot1[5] << 8, 8);
         boot();
         CHECK_EQ(config.slave_addr, 5);
         CHECK_EQ(config.comm_timeout_s, 60);
         run_for(1);
-        CHECK_EQ(__config_start__[32], 0xFF); /* no further write */
+        CHECK_EQ(__config_start__[2 * CFG_RECORD_SIZE], 0xFF); /* no further write */
     }
 }
 

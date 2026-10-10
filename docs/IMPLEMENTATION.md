@@ -42,9 +42,8 @@ has been erased.
 
 - Standard Modbus RTU slave. Serial format: 8 data bits, 1 stop bit, parity
   none/even/odd. Default **9600 8N1, address 1**.
-- Supported function codes: 01, 03, 04, 05, 06, 0F, 10. Optionally FC 2B/0E
-  (Read Device Identification), if the pinned nanoMODBUS version supports
-  it.
+- Supported function codes: 01, 03, 04, 05, 06, 0F, 10 and 2B/0E (Read
+  Device Identification, basic objects).
 - Broadcast (address 0) frames: writes are executed, and **no reply** is
   sent, as the Modbus specification requires.
 - Coil writes accept only `FF00` and `0000`. Any other value gives
@@ -143,6 +142,7 @@ Rules:
 | 1   | common  | The active settings equal the variant defaults |
 | 2   | common  | Last reset was caused by the watchdog |
 | 3   | common  | Flash write error |
+| 4   | common  | Settings write pending: the last change is held back by the flash write rate limit (5.6) and is written within a minute. Do not power off while set |
 | 8   | heater  | Hold active: a higher step is pending because the hold time has not passed yet |
 | 9   | heater  | Switching sequence in progress |
 
@@ -260,6 +260,12 @@ pinned release under `third_party/nanomodbus/`, with its `LICENSE` and a
   frame's length from its function code, so the timeout is only used to
   recover from broken frames. The generous minimum tolerates gaps inside
   frames from USB-RS485 adapters.
+- Every byte restarts the byte timeout, so the `read` callback also bounds
+  the total time of one read: the time the requested bytes take at the
+  current baud rate, plus 1 ms per byte and one byte timeout. A stray
+  device sending sparse bytes (one every 10 to 19 ms) can therefore not
+  hold the main loop beyond the watchdog. Worst case (246 bytes at
+  4800 baud): about 0.83 s.
 - The `flush` callback (called by nanoMODBUS after an invalid frame)
   discards bytes until the line has been idle for t3.5, for at most 100 ms.
   This resynchronizes with the frame boundaries.
@@ -268,6 +274,14 @@ pinned release under `third_party/nanomodbus/`, with its `LICENSE` and a
 - Device identification (FC 2B/0E, basic): VendorName `rtu-relais-4ch`,
   ProductCode = variant name, MajorMinorRevision = firmware version.
 - After a slave address change, the server instance is re-created.
+- nanoMODBUS frames by length (from the function code), not by t3.5
+  silence. On a multi-drop bus it also sees the other slaves' replies and
+  parses them as requests: they are ignored by address, but depending on
+  their length the CRC check fails and triggers a flush, which
+  resynchronizes. The CRC error counter (input register 0x0006) therefore
+  only counts frames whose address byte is this device's address or 0
+  (broadcast). This uses the unit ID that nanoMODBUS keeps in its instance
+  after the poll (pinned version).
 
 ### 5.2 Modules
 
@@ -289,10 +303,19 @@ App/
                     sequencer. No HAL, host testable
 third_party/nanomodbus/
 test/
-  Makefile          host build (gcc)
-  test_heater.c     quantization, hold time, all 7x7 sequences + invariant
-  test_server.c     nanoMODBUS server with an in-memory transport: register
-                    map, exceptions, broadcast, comm timeout, for both variants
+  Makefile          host build (native gcc, ASan + UBSan)
+  stubs/            fake HAL: GPIO, tick, flash, UART transport (main.h
+                    replaces the CubeMX header)
+  test_common.c     Modbus RTU transactions through the real nanoMODBUS
+                    server, assertions, fake flash records
+  test_plain.c      plain register map, exceptions, broadcast, serial
+                    settings, comm timeout, flash log, variant switch
+  test_heater.c     step table against a circuit model, quantization, hold
+                    time, hysteresis, all 7x7 sequences + invariant, heater
+                    register map, variant switch
+  sim.c             pty simulator for tools/test_device.py
+tools/
+  test_device.py    on-device test (see 8)
 ```
 
 CubeMX-generated code is only touched inside `USER CODE` blocks.
@@ -304,15 +327,18 @@ CubeMX-generated code is only touched inside `USER CODE` blocks.
 ```c
 typedef struct {
     uint16_t id;                       /* input register 0x0001 */
+    const char *name;                  /* device identification ProductCode */
     void (*init)(void);
     void (*poll)(uint32_t now_ms);     /* timers, sequencer */
     void (*safe_state)(void);          /* comm timeout */
-    /* coils: write handler NULL -> exception 01 */
-    nmbs_error (*read_coils)(uint16_t addr, uint16_t qty, nmbs_bitfield out);
-    nmbs_error (*write_coils)(uint16_t addr, uint16_t qty, const nmbs_bitfield in);
+    /* coil writes, range already checked. NULL: FC 05/0F give exception 01.
+       Coil reads are common (relay state). */
+    nmbs_error (*write_coils)(uint16_t addr, uint16_t qty, const nmbs_bitfield coils);
     /* variant range 0x0010..0x00FF only */
     nmbs_error (*read_hreg)(uint16_t addr, uint16_t *val);
-    nmbs_error (*write_hreg)(uint16_t addr, uint16_t val, bool *control_write);
+    /* apply = false: only validate. *control is set if the write
+       retriggers the communication timeout */
+    nmbs_error (*write_hreg)(uint16_t addr, uint16_t val, bool apply, bool *control);
     nmbs_error (*read_ireg)(uint16_t addr, uint16_t *val);
     uint16_t (*status_flags)(void);    /* bits 8..15 */
 } profile_t;
@@ -320,8 +346,9 @@ typedef struct {
 extern const profile_t profile;       /* provided by profile_plain.c or profile_heater.c */
 ```
 
-Multi-register writes (FC 10) are validated in full first, then applied.
-If any value is invalid, nothing is written (exception 03).
+Multi-register writes (FC 10) are validated in full first (`apply = false`
+for every register), then applied. If any value is invalid, nothing is
+written (exception 03).
 
 ### 5.4 Build system and variant selection
 
@@ -365,14 +392,33 @@ project **switches the CubeMX toolchain to CMake**:
 
 - The last two 1 KiB flash pages are used: 0x0800F800 and 0x0800FC00. The
   linker script limits the application to 62 KiB.
-- Each record is 16 bytes, written as 8 half-words:
-  `magic, seq, addr, baud, parity, variant, comm_timeout, hold_time, hysteresis, crc16`
-  (addr, baud, parity and variant are one byte each).
+- Each record is 32 bytes, written as 16 half-words (little endian):
+
+  | Offset | Size | Field |
+  |--------|------|-------|
+  | 0      | 2    | magic `0xC0F2` |
+  | 2      | 1    | format version, 1 |
+  | 3      | 1    | variant ID (input register 0x0001) of the writing firmware |
+  | 4      | 2    | sequence number |
+  | 6      | 1    | slave address |
+  | 7      | 1    | baud index |
+  | 8      | 1    | parity |
+  | 9      | 1    | reserved, erased (0xFF) |
+  | 10     | 2    | comm timeout in s |
+  | 12     | 2    | hold time in s |
+  | 14     | 2    | hysteresis in 0.1 % |
+  | 16     | 14   | reserved, erased (0xFFFF) |
+  | 30     | 2    | Modbus CRC16 over offsets 0..29 |
+
   The fields are shared by both variants. The plain variant ignores the
-  heater fields.
-- `variant` is the variant ID (input register 0x0001) of the firmware that
-  wrote the record. If it differs from the running variant (other variant
-  flashed, or 0 from firmware before this field existed), the serial
+  heater fields. Reserved fields stay erased, so a later firmware can add
+  a field that reads as "unset" (0xFFFF) in older records without a new
+  layout. A layout change bumps the version; records with another version
+  or magic are ignored. Records of the 16-byte pre-release format (magic
+  `0xC0F1`) are not read: such a device boots with the defaults and
+  status bit 1 set, and its pages are erased at the next write.
+- `variant` is the variant ID of the firmware that wrote the record. If it
+  differs from the running variant (other variant flashed), the serial
   settings are kept, so the device stays reachable, and comm timeout, hold
   time and hysteresis are reset to the running variant's defaults. The
   heater must not inherit the plain comm timeout of 0 (off). The record
@@ -386,8 +432,17 @@ project **switches the CubeMX toolchain to CMake**:
 - A page erase stalls the CPU for about 20 to 40 ms, and a frame received
   in that time is lost (verified on hardware: the master sees no reply and
   has to retry). So a page is only erased if it is not blank: one erase
-  per 64 settings writes, none for the first page on a blank chip. Relay
+  per 32 settings writes, none for the first page on a blank chip. Relay
   and setpoint writes never touch the flash.
+- **Write rate limit** (token bucket): 32 writes in quick succession, then
+  one per minute. Without it, a master toggling a persistent register
+  cyclically could reach the 10k erase cycles of the pages within days;
+  with it, that takes more than a year. Commissioning never hits the
+  limit. A deferred write is shown in status bit 4 and lands on the next
+  main loop pass with a token; only the latest settings are written. Until
+  then the new settings are active from RAM but lost on a power cycle. The
+  device test waits for the bit to clear before it exits. The bucket is
+  full after a reset.
 
 ### 5.7 Status LED
 
@@ -415,10 +470,16 @@ show a hardware watchdog.
 
 We use the **IWDG**:
 
-- Clock is LSI (30 to 50 kHz), prescaler 32, reload 1250. This gives about
-  1 s nominal (0.8 to 1.3 s).
+- Clock is LSI (30 to 50 kHz), prescaler 32, reload 2500. This gives about
+  2 s nominal (1.6 to 2.7 s).
 - The watchdog is refreshed **only at the end of the main loop**. ISRs
   never refresh it.
+- Loop budget: the longest loop pass at 4800 baud is a bounded read of a
+  long request (0.83 s, see 5.1) or a 256-byte reply (0.59 s), not both,
+  plus t3.5, a settings write with a page erase (up to 40 ms, twice on a
+  fresh log) and the flush (up to 100 ms): about 1 s against the 1.6 s
+  worst case. From 9600 baud on, the budget is below 0.6 s. Keep this in
+  mind when adding anything to the loop.
 - It is stopped while the core is halted in the debugger
   (`DBGMCU_APB1_FZ_DBG_IWDG_STOP`, DBGMCU clock enabled).
 - After a watchdog reset, the relays come up off (GPIO init state), and
@@ -433,9 +494,15 @@ We use the **IWDG**:
 
 ## 7. Implementation Steps
 
-All steps are implemented. The plain variant passed the device test on
-hardware (9600 8N1, adapter without echo). Still open on hardware: the
-heater variant, `--serial-test` and the factory reset.
+All steps are implemented. Both variants passed the device test on
+hardware (9600 8N1, adapter without echo), including the switch from plain
+to heater with stored settings. `--serial-test` passed for all baud
+rates (4800 to 256000) with parity none, even and odd. The factory reset
+(SWDIO to GND at power-up) works, with the fast LED blinks as confirmation.
+The review fixes (2 s watchdog, bounded reads, settings record v1, write
+rate limit) passed the same tests on hardware for both variants; repeated
+runs hit the rate limit, and the device test waited for the deferred
+write (status bit 4) as intended.
 
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
@@ -463,11 +530,12 @@ heater variant, `--serial-test` and the factory reset.
   timeout, the heater step walk and the hold time. The comm timeout test
   uses a value that differs from the stored one (2 s, or 3 s if 2 s is
   stored), so every run writes to flash. At the end it checks that the
-  flash error flag is clear and that the UART error counter did not grow. `--serial-test` cycles
-  through baud rates (`--bauds`) and parities (`--parities`) and then
-  restores the original settings. `--echo` is for adapters that receive
-  their own transmission. Like a Modbus master, the script retries once
-  on a missing reply and reports the retry count. It waits 100 ms after
-  writes that go to flash, and restores the settings it changed even
-  when it aborts. **The test switches the relays: disconnect the
-  loads first.**
+  flash error flag is clear and that the UART error counter did not grow.
+  `--serial-test` cycles through baud rates (`--bauds`) and parities
+  (`--parities`) and then restores the original settings. `--echo` is for
+  adapters that receive their own transmission. Like a Modbus master, the
+  script retries once on a missing reply and reports the retry count. It
+  waits 100 ms after writes that go to flash, restores the settings it
+  changed even when it aborts, and at the end waits for a settings write
+  deferred by the rate limit (status bit 4). **The test switches the
+  relays: disconnect the loads first.**

@@ -26,6 +26,9 @@
 
 /* Minimum byte timeout, tolerates gaps from USB-RS485 adapters */
 #define BYTE_TIMEOUT_MIN_MS 20
+/* Gap allowance per byte for the total time of one read (USB adapters
+   deliver in 1 ms USB frames), see rs485_read() */
+#define READ_JITTER_PER_BYTE_MS 1
 /* Upper bound for rs485_flush() */
 #define FLUSH_MAX_MS 100
 
@@ -36,6 +39,7 @@ static volatile uint16_t rx_errors;
 static volatile uint16_t rx_overflows;
 
 static uint32_t t35_us;
+static uint32_t char_us; /* one character (11 bits) at the current baud rate */
 
 void USART1_IRQHandler(void)
 {
@@ -102,6 +106,7 @@ void rs485_init(uint32_t baud, uint8_t parity)
     t35_us = (baud <= T35_FIXED_BAUD_MIN)
                  ? DIV_CEIL(T35_HALF_CHARS * MODBUS_CHAR_BITS * US_PER_S, 2 * baud)
                  : T35_FIXED_US;
+    char_us = DIV_CEIL(MODBUS_CHAR_BITS * US_PER_S, baud);
 
     rx_tail = rx_head;
     USART1->ICR = USART_ERR_CLEAR;
@@ -116,17 +121,29 @@ int32_t rs485_read(uint8_t *buf, uint16_t count, int32_t timeout_ms, void *arg)
 {
     (void)arg;
     uint16_t n = 0;
-    uint32_t start = HAL_GetTick();
+    uint32_t begin = HAL_GetTick();
+    uint32_t last = begin;
+    /*
+     * Every byte restarts the byte timeout, so a stray device sending
+     * sparse bytes could hold the main loop (and the watchdog) for
+     * count * timeout. Bound the total time to what count bytes take at
+     * the current baud rate, plus the gap allowance and one byte timeout.
+     */
+    uint32_t total_ms = (uint32_t)(timeout_ms > 0 ? timeout_ms : 0) + DIV_CEIL((uint32_t)count * char_us, US_PER_MS) +
+                        (uint32_t)count * READ_JITTER_PER_BYTE_MS;
 
     while (n < count) {
         if (rx_tail != rx_head) {
             buf[n++] = rx_buf[rx_tail];
             rx_tail = (uint8_t)(rx_tail + 1);
-            start = HAL_GetTick();
+            last = HAL_GetTick();
             continue;
         }
-        if (timeout_ms >= 0 && HAL_GetTick() - start >= (uint32_t)timeout_ms) {
-            break;
+        if (timeout_ms >= 0) {
+            uint32_t now = HAL_GetTick();
+            if (now - last >= (uint32_t)timeout_ms || now - begin >= total_ms) {
+                break;
+            }
         }
     }
     return n;

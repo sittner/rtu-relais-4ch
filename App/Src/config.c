@@ -7,6 +7,7 @@
 #include "main.h"
 #include "nanomodbus.h"
 #include "profile.h"
+#include "util.h"
 
 /*
  * Settings log in the last two flash pages (see App/STM32F030C8Tx_app.ld).
@@ -18,18 +19,30 @@
  * An erase stalls the CPU for 20 to 40 ms and UART bytes are lost meanwhile,
  * so erase only when needed (one erase per RECORDS_PER_PAGE writes).
  *
- * Each record carries the variant ID. After flashing the other variant, the
- * serial settings are kept (the device stays reachable), all others are
- * reset to the variant defaults: the heater must not inherit the plain
- * comm timeout of 0 (off).
+ * Each record carries a format version and the variant ID. Reserved fields
+ * are left erased (0xFFFF), so a later version can add a field that reads
+ * as "unset" in older records without a new layout. After flashing the
+ * other variant, the serial settings are kept (the device stays reachable),
+ * all others are reset to the variant defaults: the heater must not inherit
+ * the plain comm timeout of 0 (off).
+ *
+ * Write rate limit (token bucket): WRITE_BURST writes in quick succession,
+ * then one per WRITE_REFILL_MS. A master that toggles a persistent register
+ * cyclically would otherwise wear the pages out within days. A deferred
+ * write is retried on every config_save() call (every main loop pass) and
+ * reported by config_save_pending(). The latest settings win.
  */
 
 #define PAGE_SIZE        FLASH_PAGE_SIZE
-#define RECORD_MAGIC     0xC0F1u
-#define RECORD_HALFWORDS 8
+#define RECORD_MAGIC     0xC0F2u /* 0xC0F1 was the 16-byte pre-release format */
+#define RECORD_VERSION   1
+#define RECORD_HALFWORDS 16
 #define RECORD_SIZE      (RECORD_HALFWORDS * 2)
 #define RECORDS_PER_PAGE (PAGE_SIZE / RECORD_SIZE)
 #define FLASH_ERASED     0xFFFFu
+
+#define WRITE_BURST     32
+#define WRITE_REFILL_MS (60u * MS_PER_S)
 
 #ifdef FW_PROFILE_HEATER
 #define CONFIG_VARIANT PROFILE_ID_HEATER
@@ -51,15 +64,18 @@
 
 typedef struct {
     uint16_t magic;
+    uint8_t version; /* RECORD_VERSION: layout of the fields below */
+    uint8_t variant; /* PROFILE_ID_* of the firmware that wrote the record */
     uint16_t seq;
     uint8_t slave_addr;
     uint8_t baud_idx;
     uint8_t parity;
-    uint8_t variant; /* PROFILE_ID_*, 0 in records of older firmware */
+    uint8_t reserved8;     /* erased */
     uint16_t comm_timeout_s;
     uint16_t hold_time_s;
     uint16_t hysteresis;
-    uint16_t crc;
+    uint16_t reserved[7];  /* erased */
+    uint16_t crc;          /* Modbus CRC16 over everything before */
 } record_t;
 
 _Static_assert(sizeof(record_t) == RECORD_SIZE, "record size");
@@ -86,6 +102,8 @@ static uint8_t active_page;    /* page holding the newest record */
 static uint16_t next_slot;     /* next free slot in active_page */
 static uint16_t seq;           /* sequence number of the newest record */
 static bool flash_error;
+static uint8_t write_tokens;   /* rate limit, see above */
+static uint32_t refill_ms;     /* time of the last token refill */
 
 static const record_t *slot_ptr(uint8_t page, uint16_t slot)
 {
@@ -100,7 +118,7 @@ static uint16_t record_crc(const record_t *r)
 
 static bool record_valid(const record_t *r)
 {
-    return r->magic == RECORD_MAGIC && r->crc == record_crc(r);
+    return r->magic == RECORD_MAGIC && r->version == RECORD_VERSION && r->crc == record_crc(r);
 }
 
 static bool slot_erased(const record_t *r)
@@ -141,6 +159,9 @@ void config_get_defaults(config_t *cfg)
 void config_init(void)
 {
     const record_t *newest = NULL;
+
+    write_tokens = WRITE_BURST;
+    refill_ms = HAL_GetTick();
 
     for (uint8_t page = 0; page < 2; page++) {
         for (uint16_t slot = 0; slot < RECORDS_PER_PAGE; slot++) {
@@ -229,6 +250,23 @@ static bool program_record(const record_t *slot, const record_t *rec)
     return memcmp(slot, rec, RECORD_SIZE) == 0;
 }
 
+static void refill_tokens(uint32_t now_ms)
+{
+    if (write_tokens >= WRITE_BURST) {
+        refill_ms = now_ms;
+        return;
+    }
+    while (write_tokens < WRITE_BURST && now_ms - refill_ms >= WRITE_REFILL_MS) {
+        write_tokens++;
+        refill_ms += WRITE_REFILL_MS;
+    }
+}
+
+bool config_save_pending(void)
+{
+    return !flash_error && !(config_equal(&stored, &config) && !stored_foreign);
+}
+
 bool config_save(void)
 {
     if (config_equal(&stored, &config) && !stored_foreign) {
@@ -238,18 +276,24 @@ bool config_save(void)
     if (flash_error) {
         return false;
     }
+    refill_tokens(HAL_GetTick());
+    if (write_tokens == 0) {
+        return true; /* deferred, see config_save_pending() */
+    }
+    write_tokens--;
 
-    record_t rec = {
-        .magic = RECORD_MAGIC,
-        .seq = (uint16_t)(seq + 1),
-        .slave_addr = config.slave_addr,
-        .baud_idx = config.baud_idx,
-        .parity = config.parity,
-        .variant = CONFIG_VARIANT,
-        .comm_timeout_s = config.comm_timeout_s,
-        .hold_time_s = config.hold_time_s,
-        .hysteresis = config.hysteresis,
-    };
+    record_t rec;
+    memset(&rec, 0xFF, sizeof(rec)); /* reserved fields stay erased */
+    rec.magic = RECORD_MAGIC;
+    rec.version = RECORD_VERSION;
+    rec.variant = CONFIG_VARIANT;
+    rec.seq = (uint16_t)(seq + 1);
+    rec.slave_addr = config.slave_addr;
+    rec.baud_idx = config.baud_idx;
+    rec.parity = config.parity;
+    rec.comm_timeout_s = config.comm_timeout_s;
+    rec.hold_time_s = config.hold_time_s;
+    rec.hysteresis = config.hysteresis;
     rec.crc = record_crc(&rec);
 
     bool ok;

@@ -32,6 +32,10 @@ PROFILE_HEATER = 2
 # erase, 20 to 40 ms), so wait a bit after writing them.
 PERSISTENT_REGS = {0x0000, 0x0011, 0x0012, 0x010F}
 FLASH_SETTLE_S = 0.1
+# The firmware limits the flash write rate (32 in a burst, then one per
+# minute) and shows a deferred write in status bit 4.
+STATUS_SAVE_PENDING = 0x0010
+SAVE_PENDING_MAX_S = 70
 
 HEATER_STEP_MASK = [0x0, 0x6, 0x1, 0xE, 0x3, 0xF, 0xB]
 HEATER_STEP_POWER = [0, 167, 334, 500, 667, 834, 1000]
@@ -373,6 +377,23 @@ def check_health(c, uart_errors_before):
     check(new == 0, f"no new UART errors ({new})")
 
 
+def wait_settings_saved(c):
+    """Wait for a settings write deferred by the rate limit, so a power
+    cycle right after the test does not lose the restored settings."""
+    t0 = time.monotonic()
+    waited = False
+    while c.ireg(3) & STATUS_SAVE_PENDING:
+        if not waited:
+            print("  note  settings write deferred by the rate limit, waiting")
+            waited = True
+        if time.monotonic() - t0 > SAVE_PENDING_MAX_S:
+            check(False, "settings write still pending")
+            return
+        time.sleep(1)
+    if waited:
+        print(f"  ok    settings written after {time.monotonic() - t0:.0f} s")
+
+
 def test_serial(c, bauds, parities):
     print("serial settings")
     orig = (c.addr, c.baud, c.parity)
@@ -431,6 +452,7 @@ def main():
     check_health(c, uart_errors)
     if args.serial_test:
         test_serial(c, [int(b) for b in args.bauds.split(",")], args.parities)
+    wait_settings_saved(c)
 
     if retries:
         print(f"{retries} request(s) needed a retry")
