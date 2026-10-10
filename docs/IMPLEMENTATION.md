@@ -436,8 +436,8 @@ We use the **IWDG**:
 All steps are implemented. Both variants passed the device test on
 hardware (9600 8N1, adapter without echo), including the switch from plain
 to heater with stored settings. `--serial-test` passed for all baud
-rates (4800 to 256000) with parity none, even and odd. Still open on
-hardware: the factory reset.
+rates (4800 to 256000) with parity none, even and odd. The factory reset
+(SWDIO to GND at power-up) works, with the fast LED blinks as confirmation.
 
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
