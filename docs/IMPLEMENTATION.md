@@ -366,9 +366,17 @@ project **switches the CubeMX toolchain to CMake**:
 - The last two 1 KiB flash pages are used: 0x0800F800 and 0x0800FC00. The
   linker script limits the application to 62 KiB.
 - Each record is 16 bytes, written as 8 half-words:
-  `magic, seq, addr, baud, parity, comm_timeout, hold_time, hysteresis, crc16`.
+  `magic, seq, addr, baud, parity, variant, comm_timeout, hold_time, hysteresis, crc16`
+  (addr, baud, parity and variant are one byte each).
   The fields are shared by both variants. The plain variant ignores the
   heater fields.
+- `variant` is the variant ID (input register 0x0001) of the firmware that
+  wrote the record. If it differs from the running variant (other variant
+  flashed, or 0 from firmware before this field existed), the serial
+  settings are kept, so the device stays reachable, and comm timeout, hold
+  time and hysteresis are reset to the running variant's defaults. The
+  heater must not inherit the plain comm timeout of 0 (off). The record
+  is then rewritten with the right variant ID.
 - Records are appended to the active page. When the page is full, the
   other page is erased and receives the record. The old page stays as it
   is until the next page switch. At boot the newest valid record (highest

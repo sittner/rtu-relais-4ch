@@ -7,6 +7,7 @@
 #include "main.h"
 #include "profile.h"
 #include "relay.h"
+#include "util.h"
 
 /* ---- heater_ctrl ---------------------------------------------------- */
 
@@ -166,6 +167,40 @@ static void test_hysteresis(void)
     CHECK_EQ(h.actual_step, 6);
 }
 
+/* forward */
+static void boot(void);
+
+/*
+ * Settings from the plain variant (or older firmware without variant ID):
+ * serial settings kept, the rest reset to the heater defaults, in
+ * particular the comm timeout (plain default 0 = off).
+ */
+static void test_variant_switch(void)
+{
+    const uint8_t variants[] = { PROFILE_ID_PLAIN, 0 };
+    for (unsigned i = 0; i < ARRAY_SIZE(variants); i++) {
+        fake_flash_erase_all();
+        put_config_record(0, 7, variants[i], 5, CONFIG_BAUD_38400, CONFIG_PARITY_EVEN, 0, 10, 20);
+        boot();
+        CHECK_EQ(config.slave_addr, 5);
+        CHECK_EQ(config.baud_idx, CONFIG_BAUD_38400);
+        CHECK_EQ(config.parity, CONFIG_PARITY_EVEN);
+        CHECK_EQ(config.comm_timeout_s, 60);
+        CHECK_EQ(config.hold_time_s, 60);
+        CHECK_EQ(config.hysteresis, 0);
+
+        /* rewritten as a heater record, kept after a reboot */
+        run_for(1);
+        CHECK(memcmp(__config_start__ + 16, "\xF1\xC0\x08\x00", 4) == 0);
+        CHECK_EQ(__config_start__[16 + 7], PROFILE_ID_HEATER);
+        boot();
+        CHECK_EQ(config.slave_addr, 5);
+        CHECK_EQ(config.comm_timeout_s, 60);
+        run_for(1);
+        CHECK_EQ(__config_start__[32], 0xFF); /* no further write */
+    }
+}
+
 /* ---- heater variant over Modbus ------------------------------------- */
 
 static void boot(void)
@@ -253,6 +288,7 @@ int main(void)
     RUN(test_hold_time);
     RUN(test_hysteresis);
     RUN(test_server);
+    RUN(test_variant_switch);
 
     printf(test_failures ? "%d FAILURE(S)\n" : "all passed\n", test_failures);
     return test_failures ? 1 : 0;

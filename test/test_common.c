@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "test_common.h"
 
+#include "nanomodbus.h"
 #include "profile.h"
 
 int test_failures;
@@ -115,4 +116,18 @@ void run_for(uint32_t ms)
         mb_server_poll(fake_tick);
         profile.poll(fake_tick);
     }
+}
+
+void put_config_record(uint16_t slot, uint16_t seq, uint8_t variant, uint8_t addr, uint8_t baud, uint8_t parity,
+                       uint16_t timeout, uint16_t hold, uint16_t hyst)
+{
+    /* Layout of record_t in config.c (little endian) */
+    uint8_t r[16] = {
+        0xF1, 0xC0, seq & 0xFF, seq >> 8, addr, baud, parity, variant,
+        timeout & 0xFF, timeout >> 8, hold & 0xFF, hold >> 8, hyst & 0xFF, hyst >> 8,
+    };
+    uint16_t crc = nmbs_crc_calc(r, 14, NULL);
+    r[14] = crc & 0xFF;
+    r[15] = crc >> 8;
+    memcpy(__config_start__ + slot * sizeof(r), r, sizeof(r));
 }

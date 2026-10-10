@@ -10,6 +10,7 @@ extern uint32_t fake_tick;
 extern bool fake_wdt_reset;
 extern uint32_t fake_uptime;
 extern int fake_flash_erases;
+extern uint8_t __config_start__[]; /* settings flash, 2 pages */
 
 extern uint8_t fake_rx[512];
 extern size_t fake_rx_len, fake_rx_pos;

@@ -272,6 +272,32 @@ static void test_flash_log(void)
     CHECK_EQ(fake_flash_erases, erases);
 }
 
+/* Settings from the heater variant: serial settings kept, rest defaults */
+static void test_variant_switch(void)
+{
+    fake_flash_erase_all();
+    put_config_record(0, 3, PROFILE_ID_HEATER, 9, CONFIG_BAUD_19200, CONFIG_PARITY_ODD, 60, 30, 5);
+    boot();
+    CHECK_EQ(config.slave_addr, 9);
+    CHECK_EQ(config.baud_idx, CONFIG_BAUD_19200);
+    CHECK_EQ(config.parity, CONFIG_PARITY_ODD);
+    CHECK_EQ(config.comm_timeout_s, 0);
+    CHECK_EQ(config.hold_time_s, 60);
+    CHECK_EQ(config.hysteresis, 0);
+    run_for(1);
+    CHECK_EQ(__config_start__[16 + 7], PROFILE_ID_PLAIN);
+
+    /* own variant: taken as is */
+    fake_flash_erase_all();
+    put_config_record(0, 3, PROFILE_ID_PLAIN, 9, CONFIG_BAUD_19200, CONFIG_PARITY_ODD, 60, 30, 5);
+    boot();
+    CHECK_EQ(config.comm_timeout_s, 60);
+    CHECK_EQ(config.hold_time_s, 30);
+    CHECK_EQ(config.hysteresis, 5);
+    run_for(1);
+    CHECK_EQ(__config_start__[16], 0xFF); /* nothing rewritten */
+}
+
 int main(void)
 {
     RUN(test_ident);
@@ -281,6 +307,7 @@ int main(void)
     RUN(test_serial_settings);
     RUN(test_comm_timeout);
     RUN(test_flash_log);
+    RUN(test_variant_switch);
 
     printf(test_failures ? "%d FAILURE(S)\n" : "all passed\n", test_failures);
     return test_failures ? 1 : 0;

@@ -6,6 +6,7 @@
 
 #include "main.h"
 #include "nanomodbus.h"
+#include "profile.h"
 
 /*
  * Settings log in the last two flash pages (see App/STM32F030C8Tx_app.ld).
@@ -16,6 +17,11 @@
  *
  * An erase stalls the CPU for 20 to 40 ms and UART bytes are lost meanwhile,
  * so erase only when needed (one erase per RECORDS_PER_PAGE writes).
+ *
+ * Each record carries the variant ID. After flashing the other variant, the
+ * serial settings are kept (the device stays reachable), all others are
+ * reset to the variant defaults: the heater must not inherit the plain
+ * comm timeout of 0 (off).
  */
 
 #define PAGE_SIZE        FLASH_PAGE_SIZE
@@ -24,6 +30,12 @@
 #define RECORD_SIZE      (RECORD_HALFWORDS * 2)
 #define RECORDS_PER_PAGE (PAGE_SIZE / RECORD_SIZE)
 #define FLASH_ERASED     0xFFFFu
+
+#ifdef FW_PROFILE_HEATER
+#define CONFIG_VARIANT PROFILE_ID_HEATER
+#else
+#define CONFIG_VARIANT PROFILE_ID_PLAIN
+#endif
 
 /* Defaults, the comm timeout differs per variant */
 #define DEFAULT_SLAVE_ADDR 1
@@ -43,7 +55,7 @@ typedef struct {
     uint8_t slave_addr;
     uint8_t baud_idx;
     uint8_t parity;
-    uint8_t reserved;
+    uint8_t variant; /* PROFILE_ID_*, 0 in records of older firmware */
     uint16_t comm_timeout_s;
     uint16_t hold_time_s;
     uint16_t hysteresis;
@@ -69,6 +81,7 @@ config_t config;
 
 static config_t stored;        /* what is in flash (defaults if nothing) */
 static bool log_valid;         /* a valid record exists */
+static bool stored_foreign;    /* newest record is from another variant */
 static uint8_t active_page;    /* page holding the newest record */
 static uint16_t next_slot;     /* next free slot in active_page */
 static uint16_t seq;           /* sequence number of the newest record */
@@ -157,6 +170,15 @@ void config_init(void)
             stored = c;
             log_valid = true;
             config = c;
+            stored_foreign = newest->variant != CONFIG_VARIANT;
+            if (stored_foreign) {
+                /* Keep the serial settings, defaults for the rest */
+                config_t def;
+                config_get_defaults(&def);
+                config.comm_timeout_s = def.comm_timeout_s;
+                config.hold_time_s = def.hold_time_s;
+                config.hysteresis = def.hysteresis;
+            }
             return;
         }
     }
@@ -166,6 +188,7 @@ void config_init(void)
     next_slot = RECORDS_PER_PAGE;
     seq = 0;
     log_valid = false;
+    stored_foreign = false;
     config_get_defaults(&config);
     stored = config;
 }
@@ -208,7 +231,7 @@ static bool program_record(const record_t *slot, const record_t *rec)
 
 bool config_save(void)
 {
-    if (config_equal(&stored, &config)) {
+    if (config_equal(&stored, &config) && !stored_foreign) {
         return true;
     }
     /* Do not retry (and block in erase) on every call after a failure */
@@ -222,7 +245,7 @@ bool config_save(void)
         .slave_addr = config.slave_addr,
         .baud_idx = config.baud_idx,
         .parity = config.parity,
-        .reserved = 0,
+        .variant = CONFIG_VARIANT,
         .comm_timeout_s = config.comm_timeout_s,
         .hold_time_s = config.hold_time_s,
         .hysteresis = config.hysteresis,
@@ -257,6 +280,7 @@ bool config_save(void)
     seq = rec.seq;
     stored = config;
     log_valid = true;
+    stored_foreign = false;
     return true;
 }
 

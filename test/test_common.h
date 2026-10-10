@@ -56,6 +56,11 @@ int read_coils(uint8_t unit, uint16_t addr, uint16_t qty, uint8_t *bits);
 /* Exception code of the last response, 0 if none */
 int last_exception(void);
 
+/* Write a settings record into page 0 of the fake flash, as another
+   firmware (variant, version) would have */
+void put_config_record(uint16_t slot, uint16_t seq, uint8_t variant, uint8_t addr, uint8_t baud, uint8_t parity,
+                       uint16_t timeout, uint16_t hold, uint16_t hyst);
+
 /* Advance fake time and run the main loop pieces */
 void run_for(uint32_t ms);
 
