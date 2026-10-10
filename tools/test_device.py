@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """On-device test for the rtu-relais-4ch firmware (plain and heater variant).
 
 Talks raw Modbus RTU over pyserial, so broadcast, ignored frames and

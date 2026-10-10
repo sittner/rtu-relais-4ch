@@ -13,6 +13,14 @@ The variant is selected at build time. Everything else is shared: the
 Modbus server, RS485 driver, settings storage, watchdog, LED, factory reset
 and the common registers.
 
+**License:** our code (`App/`, `test/`, `tools/`) is GPL-3.0-or-later, see
+`LICENSE`. Bundled third-party code keeps its own license: nanoMODBUS (MIT,
+`third_party/nanomodbus/LICENSE`), the ST HAL and the CubeMX generated
+files (BSD-3-Clause, `Drivers/STM32F0xx_HAL_Driver/LICENSE.txt`, also for
+`App/STM32F030C8Tx_app.ld`, which is derived from the CubeMX linker script)
+and CMSIS (Apache-2.0, `Drivers/CMSIS/LICENSE.txt`). All are compatible
+with GPLv3, so the firmware binary is distributed under GPLv3.
+
 ## 1. Hardware
 
 | Item          | Detail                                                        |
@@ -226,9 +234,10 @@ timer starts when the sequence is complete. A host unit test checks all
 - On a reset (watchdog, brown-out) or power loss, all relays release at the
   same time and in random order. The sequence cannot be guaranteed then.
   This is brief, and the end state (all off) is safe.
-- The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). Check
-  this against the NC rating of the relays actually fitted (the wiki says
-  10 A).
+- The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). The
+  fitted relays are HLS-T90 (15F), rated 30 A at 240 VAC with no separate
+  NC rating, so the relay itself has ample margin. The limit is the board
+  (PCB traces, terminals): the Waveshare wiki gives 10 A per channel.
 
 ## 5. Software Architecture
 

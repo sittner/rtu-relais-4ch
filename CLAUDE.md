@@ -53,5 +53,7 @@ four presets before committing; builds must stay free of warnings in `App/`.
   in the heater variant. `test_heater.c` checks all transitions.
 - Hardware: relays and LED are active low. RS485 direction is switched
   automatically by the transceiver; there is no DE pin.
+- License: our files start with `SPDX-License-Identifier: GPL-3.0-or-later`
+  (new files too). Do not add it to CubeMX, ST or third-party files.
 - Use named constants instead of magic numbers (`util.h`: `MS_PER_S`,
   `DIV_CEIL`, ...). Data tables (LED patterns, baud rates, heater steps) are fine.

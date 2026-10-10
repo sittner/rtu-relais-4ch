@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests: heater step logic and the heater variant register map */
 #include "test_common.h"
 

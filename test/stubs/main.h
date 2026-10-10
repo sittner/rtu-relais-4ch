@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host test replacement for the CubeMX main.h: just enough HAL */
 #ifndef MAIN_H
 #define MAIN_H

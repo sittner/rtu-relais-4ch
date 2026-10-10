@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Minimal test helpers: assertions and Modbus RTU transactions */
 #ifndef TEST_COMMON_H
 #define TEST_COMMON_H

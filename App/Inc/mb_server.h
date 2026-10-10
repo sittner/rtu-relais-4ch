@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef MB_SERVER_H
 #define MB_SERVER_H
 

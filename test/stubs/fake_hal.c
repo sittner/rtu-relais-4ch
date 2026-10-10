@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Fake HAL, flash, UART transport and app hooks for host tests */
 #include "fake_hal.h"
 

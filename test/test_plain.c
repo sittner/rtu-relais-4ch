@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host tests: Modbus register map of the plain variant */
 #include "test_common.h"
 

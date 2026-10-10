@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Host tests: firmware modules with a fake HAL, built with the native gcc
 
 CC      ?= gcc

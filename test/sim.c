@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Device simulator: firmware modules (Modbus server, settings, variant)
  * running on the host, serving Modbus RTU on a pseudo-terminal.

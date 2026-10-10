@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef HEATER_CTRL_H
 #define HEATER_CTRL_H
 
