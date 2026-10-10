@@ -42,9 +42,8 @@ has been erased.
 
 - Standard Modbus RTU slave. Serial format: 8 data bits, 1 stop bit, parity
   none/even/odd. Default **9600 8N1, address 1**.
-- Supported function codes: 01, 03, 04, 05, 06, 0F, 10. Optionally FC 2B/0E
-  (Read Device Identification), if the pinned nanoMODBUS version supports
-  it.
+- Supported function codes: 01, 03, 04, 05, 06, 0F, 10 and 2B/0E (Read
+  Device Identification, basic objects).
 - Broadcast (address 0) frames: writes are executed, and **no reply** is
   sent, as the Modbus specification requires.
 - Coil writes accept only `FF00` and `0000`. Any other value gives
@@ -268,6 +267,13 @@ pinned release under `third_party/nanomodbus/`, with its `LICENSE` and a
 - Device identification (FC 2B/0E, basic): VendorName `rtu-relais-4ch`,
   ProductCode = variant name, MajorMinorRevision = firmware version.
 - After a slave address change, the server instance is re-created.
+- nanoMODBUS frames by length (from the function code), not by t3.5
+  silence. On a multi-drop bus it also sees the other slaves' replies and
+  parses them as requests: they are ignored by address, but depending on
+  their length the CRC check can fail, which increments the CRC error
+  counter (input register 0x0006) and triggers a flush. The counter is
+  therefore only meaningful on a point-to-point link; the UART error
+  counter (0x0007) is not affected.
 
 ### 5.2 Modules
 
@@ -289,10 +295,19 @@ App/
                     sequencer. No HAL, host testable
 third_party/nanomodbus/
 test/
-  Makefile          host build (gcc)
-  test_heater.c     quantization, hold time, all 7x7 sequences + invariant
-  test_server.c     nanoMODBUS server with an in-memory transport: register
-                    map, exceptions, broadcast, comm timeout, for both variants
+  Makefile          host build (native gcc, ASan + UBSan)
+  stubs/            fake HAL: GPIO, tick, flash, UART transport (main.h
+                    replaces the CubeMX header)
+  test_common.c     Modbus RTU transactions through the real nanoMODBUS
+                    server, assertions, fake flash records
+  test_plain.c      plain register map, exceptions, broadcast, serial
+                    settings, comm timeout, flash log, variant switch
+  test_heater.c     step table against a circuit model, quantization, hold
+                    time, hysteresis, all 7x7 sequences + invariant, heater
+                    register map, variant switch
+  sim.c             pty simulator for tools/test_device.py
+tools/
+  test_device.py    on-device test (see 8)
 ```
 
 CubeMX-generated code is only touched inside `USER CODE` blocks.
@@ -304,15 +319,18 @@ CubeMX-generated code is only touched inside `USER CODE` blocks.
 ```c
 typedef struct {
     uint16_t id;                       /* input register 0x0001 */
+    const char *name;                  /* device identification ProductCode */
     void (*init)(void);
     void (*poll)(uint32_t now_ms);     /* timers, sequencer */
     void (*safe_state)(void);          /* comm timeout */
-    /* coils: write handler NULL -> exception 01 */
-    nmbs_error (*read_coils)(uint16_t addr, uint16_t qty, nmbs_bitfield out);
-    nmbs_error (*write_coils)(uint16_t addr, uint16_t qty, const nmbs_bitfield in);
+    /* coil writes, range already checked. NULL: FC 05/0F give exception 01.
+       Coil reads are common (relay state). */
+    nmbs_error (*write_coils)(uint16_t addr, uint16_t qty, const nmbs_bitfield coils);
     /* variant range 0x0010..0x00FF only */
     nmbs_error (*read_hreg)(uint16_t addr, uint16_t *val);
-    nmbs_error (*write_hreg)(uint16_t addr, uint16_t val, bool *control_write);
+    /* apply = false: only validate. *control is set if the write
+       retriggers the communication timeout */
+    nmbs_error (*write_hreg)(uint16_t addr, uint16_t val, bool apply, bool *control);
     nmbs_error (*read_ireg)(uint16_t addr, uint16_t *val);
     uint16_t (*status_flags)(void);    /* bits 8..15 */
 } profile_t;
@@ -320,8 +338,9 @@ typedef struct {
 extern const profile_t profile;       /* provided by profile_plain.c or profile_heater.c */
 ```
 
-Multi-register writes (FC 10) are validated in full first, then applied.
-If any value is invalid, nothing is written (exception 03).
+Multi-register writes (FC 10) are validated in full first (`apply = false`
+for every register), then applied. If any value is invalid, nothing is
+written (exception 03).
 
 ### 5.4 Build system and variant selection
 
@@ -419,6 +438,11 @@ We use the **IWDG**:
   1 s nominal (0.8 to 1.3 s).
 - The watchdog is refreshed **only at the end of the main loop**. ISRs
   never refresh it.
+- Loop budget: the longest loop pass is a 256-byte reply at 4800 baud
+  (0.59 s) plus t3.5, a settings write with a page erase (up to 40 ms,
+  twice on a fresh log) and the byte timeout (20 ms): about 0.7 s, so the
+  margin to the 0.8 s worst case is small, at 4800 baud only. From 9600
+  baud on, the reply takes at most 0.3 s.
 - It is stopped while the core is halted in the debugger
   (`DBGMCU_APB1_FZ_DBG_IWDG_STOP`, DBGMCU clock enabled).
 - After a watchdog reset, the relays come up off (GPIO init state), and
