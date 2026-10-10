@@ -28,6 +28,11 @@ REG_TO_PARITY = {v: k for k, v in PARITY_TO_REG.items()}
 PROFILE_PLAIN = 1
 PROFILE_HEATER = 2
 
+# Holding registers saved to flash. A flash write can stall the UART (page
+# erase, 20 to 40 ms), so wait a bit after writing them.
+PERSISTENT_REGS = {0x0000, 0x0011, 0x0012, 0x010F}
+FLASH_SETTLE_S = 0.1
+
 HEATER_STEP_MASK = [0x0, 0x6, 0x1, 0xE, 0x3, 0xF, 0xB]
 HEATER_STEP_POWER = [0, 167, 334, 500, 667, 834, 1000]
 
@@ -42,6 +47,10 @@ def crc16(data: bytes) -> int:
 
 
 class ModbusError(Exception):
+    pass
+
+
+class NoReply(ModbusError):
     pass
 
 
@@ -72,7 +81,19 @@ class Client:
         time.sleep(0.05)
 
     def request(self, pdu: bytes, addr=None, expect_reply=True):
-        """Send a PDU, return the reply PDU (None if no reply expected/received)."""
+        """Send a PDU, return the reply PDU (None if no reply expected/received).
+
+        Retries once if no reply arrives, like a Modbus master would.
+        """
+        try:
+            return self._request(pdu, addr, expect_reply)
+        except NoReply:
+            global retries
+            retries += 1
+            print(f"  note  no reply to FC {pdu[0]:02X}, retrying")
+            return self._request(pdu, addr, expect_reply)
+
+    def _request(self, pdu, addr, expect_reply):
         addr = self.addr if addr is None else addr
         frame = bytes([addr]) + pdu
         c = crc16(frame)
@@ -95,7 +116,7 @@ class Client:
                     break
         if not rx:
             if expect_reply:
-                raise ModbusError("no reply")
+                raise NoReply("no reply")
             return None
         if not expect_reply:
             raise ModbusError(f"unexpected reply {rx.hex()}")
@@ -137,10 +158,19 @@ class Client:
         return r[0] if qty == 1 else r
 
     def write_reg(self, addr, val, unit=None, expect_reply=True):
-        return self.request(struct.pack(">BHH", 6, addr, val), unit, expect_reply)
+        r = self.request(struct.pack(">BHH", 6, addr, val), unit, expect_reply)
+        self._settle(addr, 1)
+        return r
 
     def write_regs(self, addr, vals, unit=None):
-        return self.request(struct.pack(f">BHHB{len(vals)}H", 16, addr, len(vals), 2 * len(vals), *vals), unit)
+        r = self.request(struct.pack(f">BHHB{len(vals)}H", 16, addr, len(vals), 2 * len(vals), *vals), unit)
+        self._settle(addr, len(vals))
+        return r
+
+    @staticmethod
+    def _settle(addr, qty):
+        if PERSISTENT_REGS & set(range(addr, addr + qty)):
+            time.sleep(FLASH_SETTLE_S)
 
     def write_coil(self, addr, val, unit=None, expect_reply=True):
         return self.request(struct.pack(">BHH", 5, addr, val), unit, expect_reply)
@@ -155,6 +185,7 @@ class Client:
 # ---- test framework --------------------------------------------------------
 
 failures = 0
+retries = 0
 
 
 def check(cond, msg):
@@ -211,8 +242,24 @@ def test_common(c):
     return prof
 
 
+def restore(fn):
+    """Restore settings after a test, also after an abort."""
+    try:
+        fn()
+    except ModbusError as e:
+        print(f"  WARN  could not restore the settings: {e}")
+
+
 def test_plain(c):
     print("plain variant")
+    old_timeout = c.hreg(0x0000)
+    try:
+        _test_plain(c)
+    finally:
+        restore(lambda: (c.write_reg(0x0000, old_timeout), c.write_reg(0x0010, 0)))
+
+
+def _test_plain(c):
     c.write_reg(0x0010, 0)
     c.write_coil(0, 0xFF00)
     check(c.read_coils() == 0x01, "FC 05 relay 1 on")
@@ -244,7 +291,6 @@ def test_plain(c):
     check(0.9 <= dt <= 1.2, f"pulse: relay off after {dt:.2f} s")
 
     # comm timeout
-    old = c.hreg(0x0000)
     c.write_reg(0x0000, 2)
     c.write_reg(0x0010, 0x0F)
     time.sleep(1.5)
@@ -254,17 +300,23 @@ def test_plain(c):
     check(c.ireg(3) & 0x0001, "comm timeout: status bit 0")
     c.write_coil(0, 0x0000)
     check(not (c.ireg(3) & 0x0001), "comm timeout: cleared by a control write")
-    c.write_reg(0x0000, old)
-    c.write_reg(0x0010, 0)
 
 
 def test_heater(c):
     print("heater variant")
+    old_hold, old_hyst = c.hreg(0x0011, 2)
+    old_timeout = c.hreg(0x0000)
+    try:
+        _test_heater(c)
+    finally:
+        restore(lambda: (c.write_reg(0x0010, 0), c.write_regs(0x0011, [old_hold, old_hyst]),
+                         c.write_reg(0x0000, old_timeout)))
+
+
+def _test_heater(c):
     expect_exc(1, lambda: c.write_coil(0, 0xFF00), "coil writes not supported")
     expect_exc(3, lambda: c.write_reg(0x0010, 1001), "setpoint above 100 %")
 
-    old_hold, old_hyst = c.hreg(0x0011, 2)
-    old_timeout = c.hreg(0x0000)
     c.write_regs(0x0011, [0, 0])  # no hold time for the step walk
     c.write_reg(0x0000, 10)
 
@@ -300,10 +352,6 @@ def test_heater(c):
     time.sleep(2.5)
     check(c.ireg(0x0011) == 0 and c.read_coils() == 0, "comm timeout: step 0")
     check(c.ireg(3) & 0x0001, "comm timeout: status bit 0")
-
-    c.write_reg(0x0010, 0)
-    c.write_regs(0x0011, [old_hold, old_hyst])
-    c.write_reg(0x0000, old_timeout)
 
 
 def test_serial(c, bauds, parities):
@@ -363,6 +411,8 @@ def main():
     if args.serial_test:
         test_serial(c, [int(b) for b in args.bauds.split(",")], args.parities)
 
+    if retries:
+        print(f"{retries} request(s) needed a retry")
     print("all passed" if failures == 0 else f"{failures} FAILURE(S)")
     return 1 if failures else 0
 

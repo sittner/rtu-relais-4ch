@@ -236,6 +236,24 @@ static void test_flash_log(void)
     read_regs(1, 0x04, 0x0003, 1, &v);
     CHECK_EQ(v & 0x0008, 0);
 
+    /*
+     * Blank flash: the first page is not erased. Then exactly one erase per
+     * page switch (an erase stalls the UART, see config.c).
+     */
+    const uint16_t per_page = FLASH_PAGE_SIZE / 16;
+    for (uint16_t i = 1; i <= per_page; i++) {
+        write_reg(1, 0x0000, i);
+    }
+    CHECK_EQ(fake_flash_erases, erases);
+    write_reg(1, 0x0000, per_page + 1); /* to page 1, blank */
+    CHECK_EQ(fake_flash_erases, erases);
+    for (uint16_t i = per_page + 2; i <= 2 * per_page + 1; i++) {
+        write_reg(1, 0x0000, i);
+    }
+    CHECK_EQ(fake_flash_erases, erases + 1); /* back to page 0 */
+    boot();
+    CHECK_EQ(config.comm_timeout_s, 2 * per_page + 1);
+
     /* many changes: wraps across both pages several times */
     for (uint16_t i = 1; i <= 300; i++) {
         write_reg(1, 0x0000, i);

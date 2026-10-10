@@ -370,12 +370,16 @@ project **switches the CubeMX toolchain to CMake**:
   The fields are shared by both variants. The plain variant ignores the
   heater fields.
 - Records are appended to the active page. When the page is full, the
-  other page is erased and receives the record, then the old page is
-  erased. At boot the newest valid record wins. If there is none, the
-  variant defaults are used and status bit 1 is set.
+  other page is erased and receives the record. The old page stays as it
+  is until the next page switch. At boot the newest valid record (highest
+  sequence number) wins. If there is none, the variant defaults are used
+  and status bit 1 is set.
 - A record is only written when a value actually changed.
-- A page erase stalls the CPU for about 20 to 40 ms, and bytes received in
-  that time may be lost. This only happens right after a settings write.
+- A page erase stalls the CPU for about 20 to 40 ms, and a frame received
+  in that time is lost (verified on hardware: the master sees no reply and
+  has to retry). So a page is only erased if it is not blank: one erase
+  per 64 settings writes, none for the first page on a blank chip. Relay
+  and setpoint writes never touch the flash.
 
 ### 5.7 Status LED
 
@@ -421,7 +425,9 @@ We use the **IWDG**:
 
 ## 7. Implementation Steps
 
-All steps are implemented. Not yet verified on hardware.
+All steps are implemented. The plain variant passed the device test on
+hardware (9600 8N1, adapter without echo). Still open on hardware: the
+heater variant, `--serial-test` and the factory reset.
 
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
@@ -449,5 +455,8 @@ All steps are implemented. Not yet verified on hardware.
   timeout, the heater step walk and the hold time. `--serial-test` cycles
   through baud rates (`--bauds`) and parities (`--parities`) and then
   restores the original settings. `--echo` is for adapters that receive
-  their own transmission. **The test switches the relays: disconnect the
+  their own transmission. Like a Modbus master, the script retries once
+  on a missing reply and reports the retry count. It waits 100 ms after
+  writes that go to flash, and restores the settings it changed even
+  when it aborts. **The test switches the relays: disconnect the
   loads first.**

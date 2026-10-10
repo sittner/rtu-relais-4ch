@@ -9,9 +9,13 @@
 
 /*
  * Settings log in the last two flash pages (see App/STM32F030C8Tx_app.ld).
- * Records are appended to the active page. When it is full, the other page
- * is erased, the record is written there and the old page is erased.
- * At boot the valid record with the highest sequence number wins.
+ * Records are appended to the active page. When it is full, the record
+ * goes to the start of the other page, which is erased first. The old page
+ * is left as it is: at boot the valid record with the highest sequence
+ * number wins, and it is erased at the next page switch.
+ *
+ * An erase stalls the CPU for 20 to 40 ms and UART bytes are lost meanwhile,
+ * so erase only when needed (one erase per RECORDS_PER_PAGE writes).
  */
 
 #define PAGE_SIZE        FLASH_PAGE_SIZE
@@ -166,8 +170,22 @@ void config_init(void)
     stored = config;
 }
 
+static bool page_blank(uint8_t page)
+{
+    for (uint16_t slot = 0; slot < RECORDS_PER_PAGE; slot++) {
+        if (!slot_erased(slot_ptr(page, slot))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool erase_page(uint8_t page)
 {
+    if (page_blank(page)) {
+        return true;
+    }
+
     FLASH_EraseInitTypeDef erase = {
         .TypeErase = FLASH_TYPEERASE_PAGES,
         .PageAddress = (uintptr_t)slot_ptr(page, 0),
@@ -218,12 +236,14 @@ bool config_save(void)
         next_slot++;
     } else {
         /* Page full (or no log yet): continue on the other page */
-        uint8_t old_page = active_page;
         uint8_t new_page = log_valid ? (uint8_t)(active_page ^ 1) : 0;
         ok = erase_page(new_page) && program_record(slot_ptr(new_page, 0), &rec);
-        /* Without a valid log, page 1 may hold stale records: erase it too */
-        if (ok) {
-            ok = erase_page(log_valid ? old_page : 1);
+        /*
+         * Without a valid log, page 1 may hold stale records (e.g. a valid
+         * CRC with invalid settings) that would win at boot: erase it too
+         */
+        if (ok && !log_valid) {
+            ok = erase_page(1);
         }
         active_page = new_page;
         next_slot = 1;
