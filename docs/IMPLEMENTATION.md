@@ -499,6 +499,10 @@ hardware (9600 8N1, adapter without echo), including the switch from plain
 to heater with stored settings. `--serial-test` passed for all baud
 rates (4800 to 256000) with parity none, even and odd. The factory reset
 (SWDIO to GND at power-up) works, with the fast LED blinks as confirmation.
+The review fixes (2 s watchdog, bounded reads, settings record v1, write
+rate limit) passed the same tests on hardware for both variants; repeated
+runs hit the rate limit, and the device test waited for the deferred
+write (status bit 4) as intended.
 
 1. CubeMX changes, top-level CMake with variant option, linker script,
    empty `app_init()`/`app_loop()`. Both variants must build.
