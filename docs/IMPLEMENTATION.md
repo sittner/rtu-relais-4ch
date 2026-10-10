@@ -236,8 +236,9 @@ timer starts when the sequence is complete. A host unit test checks all
   This is brief, and the end state (all off) is safe.
 - The R3 normally-closed contact carries up to 8.4 A (steps 4 and 6). The
   Waveshare product page rates the board at 20 A (NO) / 10 A (NC) at
-  240 VAC, so the NC case has the smallest margin. The fitted relays are
-  HLS-T90 (15F), rated 30 A at 240 VAC with no separate NC rating.
+  240 VAC, matching the fitted HLS-T90 (15F) relays (1C: 20 A / 10 A at
+  240 VAC / 28 VDC). The NC contact of R3 therefore has the smallest
+  margin: 8.4 A of 10 A.
 
 ## 5. Software Architecture
 
