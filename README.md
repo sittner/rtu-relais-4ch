@@ -102,6 +102,22 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
     -c "init; reset halt; stm32f1x unlock 0; shutdown"
 ```
 
+## Configuration
+
+The defaults are address 1, 9600 8N1. `tools/rtu_config.py` (needs
+python3-serial) changes them and checks that the device answers with the
+new settings:
+
+```sh
+tools/rtu_config.py --port /dev/ttyUSB0 info
+tools/rtu_config.py --port /dev/ttyUSB0 set --new-addr 5 --new-baud 38400 --new-parity E
+tools/rtu_config.py --port /dev/ttyUSB0 --addr 5 --baud 38400 --parity E reset-defaults
+tools/rtu_config.py --port /dev/ttyUSB0 scan [--all-addrs]   # settings unknown
+```
+
+If nothing helps, short SWDIO (PA13) to GND at power-up to restore the
+defaults.
+
 ## Testing
 
 ```sh

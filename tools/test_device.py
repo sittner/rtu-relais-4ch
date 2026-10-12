@@ -21,175 +21,15 @@ import time
 
 import serial
 
-BAUD_RATES = [4800, 9600, 19200, 38400, 57600, 115200, 128000, 256000]
-PARITY_TO_REG = {"N": 0, "E": 1, "O": 2}
-REG_TO_PARITY = {v: k for k, v in PARITY_TO_REG.items()}
-
-PROFILE_PLAIN = 1
-PROFILE_HEATER = 2
-
-# Holding registers saved to flash. A flash write can stall the UART (page
-# erase, 20 to 40 ms), so wait a bit after writing them.
-PERSISTENT_REGS = {0x0000, 0x0011, 0x0012, 0x010F}
-FLASH_SETTLE_S = 0.1
-# The firmware limits the flash write rate (32 in a burst, then one per
-# minute) and shows a deferred write in status bit 4.
-STATUS_SAVE_PENDING = 0x0010
-SAVE_PENDING_MAX_S = 70
+from rtu_modbus import BAUD_RATES, PROFILE_HEATER, PROFILE_PLAIN, REG_TO_PARITY, Client, Exc, ModbusError
 
 HEATER_STEP_MASK = [0x0, 0x6, 0x1, 0xE, 0x3, 0xF, 0xB]
 HEATER_STEP_POWER = [0, 167, 334, 500, 667, 834, 1000]
 
 
-def crc16(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
-    return crc
-
-
-class ModbusError(Exception):
-    pass
-
-
-class NoReply(ModbusError):
-    pass
-
-
-class Exc(ModbusError):
-    """Modbus exception reply"""
-
-    def __init__(self, code):
-        super().__init__(f"exception {code}")
-        self.code = code
-
-
-class Client:
-    def __init__(self, port, baud, parity, addr, timeout, echo=False):
-        self.port_name = port
-        self.addr = addr
-        self.timeout = timeout
-        self.echo = echo
-        self.ser = None
-        self.reopen(baud, parity)
-
-    def reopen(self, baud, parity):
-        if self.ser:
-            self.ser.close()
-        self.ser = serial.Serial(self.port_name, baudrate=baud, parity=parity, bytesize=8, stopbits=1,
-                                 timeout=self.timeout)
-        self.baud = baud
-        self.parity = parity
-        time.sleep(0.05)
-
-    def request(self, pdu: bytes, addr=None, expect_reply=True):
-        """Send a PDU, return the reply PDU (None if no reply expected/received).
-
-        Retries once if no reply arrives, like a Modbus master would.
-        """
-        try:
-            return self._request(pdu, addr, expect_reply)
-        except NoReply:
-            global retries
-            retries += 1
-            print(f"  note  no reply to FC {pdu[0]:02X}, retrying")
-            return self._request(pdu, addr, expect_reply)
-
-    def _request(self, pdu, addr, expect_reply):
-        addr = self.addr if addr is None else addr
-        frame = bytes([addr]) + pdu
-        c = crc16(frame)
-        frame += bytes([c & 0xFF, c >> 8])
-        self.ser.reset_input_buffer()
-        self.ser.write(frame)
-        self.ser.flush()
-
-        if self.echo:
-            # adapter echoes its own transmission: drop it
-            self.ser.read(len(frame))
-
-        rx = b""
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            chunk = self.ser.read(self.ser.in_waiting or 1)
-            if chunk:
-                rx += chunk
-                if self._complete(rx):
-                    break
-        if not rx:
-            if expect_reply:
-                raise NoReply("no reply")
-            return None
-        if not expect_reply:
-            raise ModbusError(f"unexpected reply {rx.hex()}")
-        if len(rx) < 5 or crc16(rx[:-2]) != (rx[-2] | rx[-1] << 8):
-            raise ModbusError(f"bad reply {rx.hex()}")
-        if rx[0] != addr:
-            raise ModbusError(f"reply from address {rx[0]}")
-        pdu = rx[1:-2]
-        if pdu[0] & 0x80:
-            raise Exc(pdu[1])
-        return pdu
-
-    @staticmethod
-    def _complete(rx):
-        if len(rx) < 5:
-            return False
-        fc = rx[1]
-        if fc & 0x80:
-            n = 5
-        elif fc in (1, 2, 3, 4):
-            n = 5 + rx[2]
-        elif fc in (5, 6, 15, 16):
-            n = 8
-        else:
-            return crc16(rx[:-2]) == (rx[-2] | rx[-1] << 8)
-        return len(rx) >= n
-
-    # helpers
-    def read_regs(self, fc, addr, qty=1, unit=None):
-        pdu = self.request(struct.pack(">BHH", fc, addr, qty), unit)
-        return list(struct.unpack(f">{qty}H", pdu[2:2 + 2 * qty]))
-
-    def hreg(self, addr, qty=1):
-        r = self.read_regs(3, addr, qty)
-        return r[0] if qty == 1 else r
-
-    def ireg(self, addr, qty=1):
-        r = self.read_regs(4, addr, qty)
-        return r[0] if qty == 1 else r
-
-    def write_reg(self, addr, val, unit=None, expect_reply=True):
-        r = self.request(struct.pack(">BHH", 6, addr, val), unit, expect_reply)
-        self._settle(addr, 1)
-        return r
-
-    def write_regs(self, addr, vals, unit=None):
-        r = self.request(struct.pack(f">BHHB{len(vals)}H", 16, addr, len(vals), 2 * len(vals), *vals), unit)
-        self._settle(addr, len(vals))
-        return r
-
-    @staticmethod
-    def _settle(addr, qty):
-        if PERSISTENT_REGS & set(range(addr, addr + qty)):
-            time.sleep(FLASH_SETTLE_S)
-
-    def write_coil(self, addr, val, unit=None, expect_reply=True):
-        return self.request(struct.pack(">BHH", 5, addr, val), unit, expect_reply)
-
-    def write_coils(self, addr, qty, bits, unit=None):
-        return self.request(struct.pack(">BHHBB", 15, addr, qty, 1, bits), unit)
-
-    def read_coils(self, addr=0, qty=4):
-        return self.request(struct.pack(">BHH", 1, addr, qty))[2]
-
-
 # ---- test framework --------------------------------------------------------
 
 failures = 0
-retries = 0
 
 
 def check(cond, msg):
@@ -380,18 +220,11 @@ def check_health(c, uart_errors_before):
 def wait_settings_saved(c):
     """Wait for a settings write deferred by the rate limit, so a power
     cycle right after the test does not lose the restored settings."""
-    t0 = time.monotonic()
-    waited = False
-    while c.ireg(3) & STATUS_SAVE_PENDING:
-        if not waited:
-            print("  note  settings write deferred by the rate limit, waiting")
-            waited = True
-        if time.monotonic() - t0 > SAVE_PENDING_MAX_S:
-            check(False, "settings write still pending")
-            return
-        time.sleep(1)
-    if waited:
-        print(f"  ok    settings written after {time.monotonic() - t0:.0f} s")
+    waited = c.wait_save_done(on_wait=lambda: print("  note  settings write deferred by the rate limit, waiting"))
+    if waited is None:
+        check(False, "settings write still pending")
+    elif waited >= 1:
+        print(f"  ok    settings written after {waited:.0f} s")
 
 
 def test_serial(c, bauds, parities):
@@ -400,11 +233,9 @@ def test_serial(c, bauds, parities):
     new_addr = 200 if c.addr != 200 else 201
     combos = [(b, p) for b in bauds for p in parities]
     for baud, par in combos:
-        c.write_regs(0x0100, [new_addr, BAUD_RATES.index(baud), PARITY_TO_REG[par]])
-        c.write_reg(0x010F, 1)  # reply with the old settings
-        c.addr = new_addr
+        c.stage_serial(new_addr, baud, par)
         try:
-            c.reopen(baud, par)
+            c.apply_serial(new_addr, baud, par)
             ok = c.ireg(1) in (PROFILE_PLAIN, PROFILE_HEATER)
         except (ModbusError, serial.SerialException, OSError) as e:
             ok = False
@@ -415,10 +246,8 @@ def test_serial(c, bauds, parities):
             return
         new_addr = 200 if new_addr != 200 else 201
     # restore
-    c.write_regs(0x0100, [orig[0], BAUD_RATES.index(orig[1]), PARITY_TO_REG[orig[2]]])
-    c.write_reg(0x010F, 1)
-    c.addr = orig[0]
-    c.reopen(orig[1], orig[2])
+    c.stage_serial(*orig)
+    c.apply_serial(*orig)
     check(c.ireg(1) in (PROFILE_PLAIN, PROFILE_HEATER), "original settings restored")
 
 
@@ -454,8 +283,8 @@ def main():
         test_serial(c, [int(b) for b in args.bauds.split(",")], args.parities)
     wait_settings_saved(c)
 
-    if retries:
-        print(f"{retries} request(s) needed a retry")
+    if c.retries:
+        print(f"{c.retries} request(s) needed a retry")
     print("all passed" if failures == 0 else f"{failures} FAILURE(S)")
     return 1 if failures else 0
 

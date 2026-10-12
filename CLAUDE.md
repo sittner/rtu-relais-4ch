@@ -18,6 +18,7 @@ cmake --build --preset heater-release --target flash   # st-flash via ST-Link
 make -C test                 # host tests (both variants)
 make -C test sim             # pty simulators test/build/sim_{plain,heater}
 tools/test_device.py --port /dev/ttyUSB0 [--serial-test]   # on hardware or a simulator pty
+tools/rtu_config.py --port /dev/ttyUSB0 info|set|scan|reset-defaults   # serial settings
 ```
 
 Presets: `plain-debug`, `plain-release`, `heater-debug`, `heater-release`

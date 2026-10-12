@@ -161,6 +161,33 @@ timeout register itself restarts the timer. When the timeout
 expires, the variant goes to its safe state (plain: all relays off; heater:
 step 0) and sets status bit 0.
 
+### 3.6 Configuration tool
+
+`tools/rtu_config.py` (needs pyserial) changes the serial settings with
+the procedure from 3.3. `--addr`, `--baud` and `--parity` give the
+settings the device uses now (default address 1, 9600 8N1).
+
+- `info`: firmware version, variant, serial settings (and staged values
+  that were not applied), comm timeout, decoded status flags, uptime and
+  error counters.
+- `set --new-addr/--new-baud/--new-parity`: values not given keep the
+  current ones. It writes 0x0100..0x0102 in one FC 10, then command 1,
+  reopens the port with the new settings and checks that the device
+  answers there and reports them in 0x0100..0x0102. If it does not
+  answer, the tool tries the old settings and says which case it is.
+- `reset-defaults`: command 2 (asks first, `--yes` skips), then checks
+  the device at address 1, 9600 8N1.
+- `scan`: tries all baud rates and parities (the given settings and the
+  defaults first) at `--addr` and stops at the first reply.
+  `--all-addrs` also tries every address 1..247; that takes up to
+  about 10 minutes (24 line settings x 247 addresses x 0.1 s timeout).
+  `--all` does not stop at the first device. Probes are not retried.
+  Line settings the port cannot set (e.g. parity on a pty) are skipped.
+
+`set` and `reset-defaults` write to flash, so they wait while status bit
+4 shows a write deferred by the rate limit (5.6), and fail if status bit
+3 shows a flash error.
+
 ## 4. Heater Logic
 
 ### 4.1 Step table
@@ -329,6 +356,8 @@ test/
                     register map, variant switch
   sim.c             pty simulator for tools/test_device.py
 tools/
+  rtu_modbus.py     raw Modbus RTU client and register constants (pyserial)
+  rtu_config.py     serial settings tool (see 3.6)
   test_device.py    on-device test (see 8)
 ```
 
